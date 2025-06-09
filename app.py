@@ -5,13 +5,14 @@ import hashlib
 import requests
 import random
 import json
+import re
 from datetime import datetime
 
 app = Flask(__name__)
 
 # --- Meta Conversion API 設定 ---
 PIXEL_ID = "1664521517602334"
-ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"  # ← 請填入你自己的有效權杖
+ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"  # ← 替換為你的 Access Token
 CURRENCY = "TWD"
 VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
@@ -56,26 +57,53 @@ THANK_YOU_PAGE = '''
 </html>
 '''
 
+# --- 工具函式 ---
 def hash_data(value):
     return hashlib.sha256(value.strip().lower().encode("utf-8")).hexdigest() if value else ""
 
+def clean_phone(phone):
+    phone = re.sub(r"[^\d]", "", phone)
+    if phone.startswith("09"):
+        phone = "886" + phone[1:]
+    return phone
+
+def is_valid_email(email):
+    pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+    return re.match(pattern, email)
+
+# --- 上傳至 Meta ---
 def send_to_meta(email, phone, gender, birthdate, ip):
     event_time = int(datetime.now().timestamp())
     event_id = hashlib.md5((email + str(event_time)).encode("utf-8")).hexdigest()
     value = random.choice(VALUE_CHOICES)
     city = random.choice(CITIES)
 
-    user_data = {
-        "em": hash_data(email),
-        "ph": hash_data(phone),
-        "ge": "m" if gender == "男" else "f",
-        "db": birthdate.replace("-", ""),  # 格式 YYYYMMDD
-        "country": "TW",                   # ← 正確格式，大寫 TW
-        "client_ip_address": ip
-        # 可選加上 ct: city.lower()，但請確認有效支援的城市再加
-        # "ct": city.lower()
-    }
+    raw_email = email.strip()
+    raw_phone = clean_phone(phone)
 
+    user_data = {}
+
+    # Email
+    if raw_email and is_valid_email(raw_email):
+        user_data["em"] = hash_data(raw_email)
+    else:
+        print(f"⚠️ Email 格式錯誤，略過 em：{raw_email}")
+
+    # Phone
+    if raw_phone and len(raw_phone) >= 9:
+        user_data["ph"] = hash_data(raw_phone)
+    else:
+        print(f"⚠️ 電話格式錯誤，略過 ph：{raw_phone}")
+
+    # 其他欄位
+    user_data["ge"] = "m" if gender == "男" else "f"
+    user_data["db"] = birthdate.replace("-", "")
+    user_data["country"] = "TW"
+    user_data["client_ip_address"] = ip
+    user_data["ct"] = hash_data(city)
+    user_data["external_id"] = hash_data(raw_email or event_id)
+
+    # Payload
     payload = {
         "data": [{
             "event_name": "Purchase",
@@ -90,17 +118,27 @@ def send_to_meta(email, phone, gender, birthdate, ip):
         }]
     }
 
-    url = f"https://graph.facebook.com/v18.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}"
-
-    print("📤 即將上傳的 Meta payload：")
+    # Debug log
+    print("📥 雜湊前 email：", raw_email)
+    print("📥 雜湊後 email：", user_data.get("em", "（略過）"))
+    print("📞 雜湊前 phone：", raw_phone)
+    print("📞 雜湊後 phone：", user_data.get("ph", "（略過）"))
+    print("🌍 城市（ct）：", city, "→", user_data["ct"])
+    print("🆔 external_id：", user_data["external_id"])
+    print("📤 即將送出 Meta payload：")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
     try:
-        res = requests.post(url, json=payload, timeout=10)
+        res = requests.post(
+            f"https://graph.facebook.com/v18.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}",
+            json=payload,
+            timeout=10
+        )
         print(f"✅ Meta 回傳：{res.status_code} - {res.text}")
     except Exception as e:
         print(f"❌ 上傳至 Meta 失敗：{e}")
 
+# --- 表單路由 ---
 @app.route("/", methods=["GET"])
 def form():
     return render_template_string(HTML_FORM)
@@ -127,10 +165,11 @@ def submit():
             writer.writeheader()
         writer.writerow(data)
 
-    # 回傳至 Meta
+    # 回傳給 Meta
     send_to_meta(data["Email"], data["電話"], data["性別"], data["出生年月日"], ip)
 
     return render_template_string(THANK_YOU_PAGE)
 
+# --- 執行 ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=3000)
