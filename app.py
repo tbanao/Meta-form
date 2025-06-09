@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # --- Meta Conversion API 設定 ---
 PIXEL_ID = "1664521517602334"
-ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"  # ← 請替換成你的有效權杖
+ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"  # ← 替換成你自己的 Access Token
 CURRENCY = "TWD"
 VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
@@ -72,7 +72,7 @@ def is_valid_email(email):
     return re.match(pattern, email)
 
 # --- 上傳至 Meta ---
-def send_to_meta(email, phone, gender, birthdate, ip):
+def send_to_meta(email, phone, gender, birthdate, ip, name):
     event_time = int(datetime.now().timestamp())
     event_id = hashlib.md5((email + str(event_time)).encode("utf-8")).hexdigest()
     value = random.choice(VALUE_CHOICES)
@@ -83,19 +83,23 @@ def send_to_meta(email, phone, gender, birthdate, ip):
 
     user_data = {}
 
-    # Email 雜湊
+    # Email
     if raw_email and is_valid_email(raw_email):
         user_data["em"] = hash_data(raw_email)
     else:
         print(f"⚠️ Email 格式錯誤，略過 em：{raw_email}")
 
-    # Phone 雜湊
+    # Phone
     if raw_phone and len(raw_phone) >= 9:
         user_data["ph"] = hash_data(raw_phone)
     else:
         print(f"⚠️ 電話格式錯誤，略過 ph：{raw_phone}")
 
-    # 其餘欄位一律雜湊
+    # 姓名（上傳至 ln）
+    if name:
+        user_data["ln"] = hash_data(name)
+
+    # 其他欄位（全數雜湊）
     user_data["ge"] = hash_data("m" if gender == "男" else "f")
     user_data["db"] = hash_data(birthdate.replace("-", ""))
     user_data["country"] = hash_data("tw")
@@ -122,6 +126,7 @@ def send_to_meta(email, phone, gender, birthdate, ip):
     print("📥 雜湊後 email：", user_data.get("em", "（略過）"))
     print("📞 雜湊前 phone：", raw_phone)
     print("📞 雜湊後 phone：", user_data.get("ph", "（略過）"))
+    print("👤 姓名雜湊：", user_data.get("ln", "（略過）"))
     print("🌍 城市（ct）：", city, "→", user_data["ct"])
     print("🆔 external_id：", user_data["external_id"])
     print("📤 即將送出 Meta payload：")
@@ -164,8 +169,8 @@ def submit():
             writer.writeheader()
         writer.writerow(data)
 
-    # 回傳給 Meta
-    send_to_meta(data["Email"], data["電話"], data["性別"], data["出生年月日"], ip)
+    # 回傳給 Meta（新增 name 傳入）
+    send_to_meta(data["Email"], data["電話"], data["性別"], data["出生年月日"], ip, data["姓名"])
 
     return render_template_string(THANK_YOU_PAGE)
 
