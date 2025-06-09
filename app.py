@@ -9,15 +9,15 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# Meta Conversion API 設定
+# --- Meta Conversion API 設定 ---
 PIXEL_ID = "1664521517602334"
-ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"
+ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"  # ← 請填入你自己的有效權杖
 CURRENCY = "TWD"
 VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
 CSV_FILE = "feedback.csv"
 
-# 表單 HTML
+# --- 表單 HTML ---
 HTML_FORM = '''
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -37,6 +37,10 @@ HTML_FORM = '''
         <textarea name="suggestion" rows="4" cols="50"></textarea><br><br>
         <input type="submit" value="送出">
     </form>
+    <p style="color: gray; font-size: 14px;">
+        感謝您的建議，我們將傾聽每位顧客的心聲，增加服務改善。<br>
+        以上個人相關資訊僅做為售後服務紀錄，不做其他用途。
+    </p>
 </body>
 </html>
 '''
@@ -47,6 +51,7 @@ THANK_YOU_PAGE = '''
 <head><meta charset="UTF-8"><title>感謝您的填寫</title></head>
 <body>
     <h3>感謝您的建議，我們將傾聽每位顧客的心聲，增加服務改善。</h3>
+    <p>以上個人相關資訊僅做為售後服務紀錄，不做其他用途。</p>
 </body>
 </html>
 '''
@@ -64,10 +69,11 @@ def send_to_meta(email, phone, gender, birthdate, ip):
         "em": hash_data(email),
         "ph": hash_data(phone),
         "ge": "m" if gender == "男" else "f",
-        "db": birthdate.replace("-", ""),
-        "ct": city.lower(),  # ✅ 改為明文城市
-        "country": "tw",     # ✅ 明文國別
+        "db": birthdate.replace("-", ""),  # 格式 YYYYMMDD
+        "country": "TW",                   # ← 正確格式，大寫 TW
         "client_ip_address": ip
+        # 可選加上 ct: city.lower()，但請確認有效支援的城市再加
+        # "ct": city.lower()
     }
 
     payload = {
@@ -75,7 +81,7 @@ def send_to_meta(email, phone, gender, birthdate, ip):
             "event_name": "Purchase",
             "event_time": event_time,
             "event_id": event_id,
-            "action_source": "website",  # ✅ 新增欄位
+            "action_source": "website",
             "user_data": user_data,
             "custom_data": {
                 "currency": CURRENCY,
@@ -84,14 +90,14 @@ def send_to_meta(email, phone, gender, birthdate, ip):
         }]
     }
 
-    # ✅ 上傳前印出 payload，方便偵錯
-    print("🔍 上傳 Meta 的 payload：")
+    url = f"https://graph.facebook.com/v18.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}"
+
+    print("📤 即將上傳的 Meta payload：")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-    url = f"https://graph.facebook.com/v18.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}"
     try:
         res = requests.post(url, json=payload, timeout=10)
-        print(f"✅ Meta 回傳：{res.status_code}, {res.text}")
+        print(f"✅ Meta 回傳：{res.status_code} - {res.text}")
     except Exception as e:
         print(f"❌ 上傳至 Meta 失敗：{e}")
 
@@ -121,7 +127,7 @@ def submit():
             writer.writeheader()
         writer.writerow(data)
 
-    # 上傳至 Meta
+    # 回傳至 Meta
     send_to_meta(data["Email"], data["電話"], data["性別"], data["出生年月日"], ip)
 
     return render_template_string(THANK_YOU_PAGE)
