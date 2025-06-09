@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # --- Meta Conversion API 設定 ---
 PIXEL_ID = "1664521517602334"
-ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"  # ← 替換為你的 Access Token
+ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"  # ← 請替換成你的有效權杖
 CURRENCY = "TWD"
 VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
@@ -83,27 +83,26 @@ def send_to_meta(email, phone, gender, birthdate, ip):
 
     user_data = {}
 
-    # Email
+    # Email 雜湊
     if raw_email and is_valid_email(raw_email):
         user_data["em"] = hash_data(raw_email)
     else:
         print(f"⚠️ Email 格式錯誤，略過 em：{raw_email}")
 
-    # Phone
+    # Phone 雜湊
     if raw_phone and len(raw_phone) >= 9:
         user_data["ph"] = hash_data(raw_phone)
     else:
         print(f"⚠️ 電話格式錯誤，略過 ph：{raw_phone}")
 
-    # 其他欄位
-    user_data["ge"] = "m" if gender == "男" else "f"
-    user_data["db"] = birthdate.replace("-", "")
-    user_data["country"] = "TW"
+    # 其餘欄位一律雜湊
+    user_data["ge"] = hash_data("m" if gender == "男" else "f")
+    user_data["db"] = hash_data(birthdate.replace("-", ""))
+    user_data["country"] = hash_data("tw")
     user_data["client_ip_address"] = ip
     user_data["ct"] = hash_data(city)
     user_data["external_id"] = hash_data(raw_email or event_id)
 
-    # Payload
     payload = {
         "data": [{
             "event_name": "Purchase",
