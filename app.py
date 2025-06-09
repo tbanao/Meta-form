@@ -30,7 +30,7 @@ HTML_FORM = '''
         <select name="gender" required><option value="男">男</option><option value="女">女</option></select><br><br>
         Email：<input type="email" name="email" required><br><br>
         電話：<input type="tel" name="phone" required><br><br>
-        您覺得小編的服務態度如何？解說是否清楚易懂？<br>
+        您覺得我們小編的服務態度如何？解說是否清楚易懂？<br>
         <textarea name="attitude" rows="4" cols="50" required></textarea><br><br>
         您對我們的服務有什麼建議？<br>
         <textarea name="suggestion" rows="4" cols="50"></textarea><br><br>
@@ -89,7 +89,7 @@ def send_to_meta(email, phone, gender, birthdate, ip):
         }]
     }
 
-    url = f"https://graph.facebook.com/v18.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}"
+    url = f"https://graph.facebook.com/v23.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}"
     try:
         res = requests.post(url, json=payload, timeout=10)
         print(f"Meta 回傳：{res.status_code}, {res.text}")
