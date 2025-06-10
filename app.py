@@ -8,22 +8,21 @@ from email.message import EmailMessage
 from datetime import datetime
 import re
 import random
-import os
 
 app = Flask(__name__)
 
-# === Meta Conversion API 設定 ===
+# ====== Meta Conversion API 設定（直接填） ======
 PIXEL_ID = "1664521517602334"
 ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"
 API_URL = f"https://graph.facebook.com/v23.0/{PIXEL_ID}/events"
 CURRENCY = "TWD"
 VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 
-# === Email 設定（密碼改為環境變數） ===
-FROM_EMAIL = "your@gmail.com"
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-TO_EMAIL_1 = "email1@example.com"
-TO_EMAIL_2 = "email2@example.com"
+# ====== Email 設定（直接填） ======
+FROM_EMAIL = "thairayshin@gmail.com"
+EMAIL_PASSWORD = "omts dcpq ngod cfaq"
+TO_EMAIL_1 = "z316le725@icloud.com"
+TO_EMAIL_2 = "tbanao@icloud.com"
 
 BACKUP_FOLDER = Path("form_backups")
 BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
@@ -73,7 +72,6 @@ def save_to_excel(data, file_path):
     wb.save(file_path)
 
 def send_email_with_attachment(file_path):
-    assert EMAIL_PASSWORD is not None, "環境變數 EMAIL_PASSWORD 尚未設定"
     msg = EmailMessage()
     msg['Subject'] = '新客戶表單回報'
     msg['From'] = FROM_EMAIL
@@ -103,6 +101,7 @@ def submit():
     filename = f"{name}_{timestamp}.xlsx"
     file_path = BACKUP_FOLDER / filename
 
+    # 儲存至 Excel
     raw_data = {
         "姓名": name,
         "生日": birthday,
@@ -115,6 +114,7 @@ def submit():
     }
     save_to_excel(raw_data, file_path)
 
+    # Meta user_data
     user_data = {
         "fn": hash_sha256(name),
         "ge": "m" if gender == "male" else "f",
