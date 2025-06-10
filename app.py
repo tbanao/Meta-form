@@ -72,17 +72,23 @@ def save_to_excel(data, file_path):
     ws.append(list(data.values()))
     wb.save(file_path)
 
-def send_email_with_attachment(file_path):
+def send_email_with_attachment(file_path, raw_data):
     msg = EmailMessage()
     msg['Subject'] = '新客戶表單回報'
     msg['From'] = FROM_EMAIL
     msg['To'] = [TO_EMAIL_1, TO_EMAIL_2]
-    msg.set_content("請查收附件中的客戶填寫資料。")
+
+    # 客戶填寫內容（純文字）
+    body = "\n".join([f"{key}：{value}" for key, value in raw_data.items()])
+    msg.set_content(body)
 
     with open(file_path, 'rb') as f:
-        msg.add_attachment(f.read(), maintype='application',
-                           subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                           filename=file_path.name)
+        msg.add_attachment(
+            f.read(),
+            maintype='application',
+            subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            filename=file_path.name
+        )
 
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
         smtp.login(FROM_EMAIL, EMAIL_PASSWORD)
@@ -114,6 +120,7 @@ def submit():
     }
     save_to_excel(raw_data, file_path)
 
+    # CAPI user_data 雜湊處理
     user_data = {
         "fn": hash_sha256(name),
         "ge": "m" if gender == "male" else "f",
@@ -149,7 +156,8 @@ def submit():
     headers = {"Content-Type": "application/json"}
     requests.post(API_URL, headers=headers, json=payload, params={"access_token": ACCESS_TOKEN})
 
-    send_email_with_attachment(file_path)
+    # 寄信：附檔 + 文字內容
+    send_email_with_attachment(file_path, raw_data)
 
     return "提交成功！感謝您的填寫。"
 
