@@ -92,10 +92,10 @@ Email：{form_data['Email']}
 價格（隨機）：{form_data['成交金額']} 元
 
 ✅ 滿意度調查：
-{form_data['您覺得小編的服務態度如何？解說是否清楚易懂？']}
+{form_data['滿意度調查']}
 
-💡 建議回饋：
-{form_data['您對我們的服務有什麼建議？']}
+💡 建議內容：
+{form_data['建議內容']}
 
 提交時間：{form_data['提交時間']}
 
@@ -122,7 +122,6 @@ def submit():
     satisfaction = request.form.get("satisfaction", "").strip()
     suggestion = request.form.get("suggestion", "").strip()
     value = random.choice(PRICE_CHOICES)
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{name}_{timestamp}.xlsx"
     file_path = BACKUP_FOLDER / filename
@@ -134,8 +133,8 @@ def submit():
         "Email": email,
         "電話": phone,
         "成交金額": value,
-        "您覺得小編的服務態度如何？解說是否清楚易懂？": satisfaction,
-        "您對我們的服務有什麼建議？": suggestion,
+        "滿意度調查": satisfaction,
+        "建議內容": suggestion,
         "提交時間": timestamp,
     }
 
