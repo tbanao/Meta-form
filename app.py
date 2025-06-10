@@ -1,3 +1,5 @@
+ekio kfww mtuk blnl
+
 from flask import Flask, request, render_template_string
 import os
 import hashlib
@@ -5,22 +7,31 @@ import requests
 import random
 import json
 import re
+import smtplib
 from datetime import datetime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from openpyxl import Workbook
 from pathlib import Path
 
 app = Flask(__name__)
 
-# --- 設定區 ---
+# --- Meta Conversion API 設定 ---
 PIXEL_ID = "1664521517602334"
 ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"
 CURRENCY = "TWD"
 VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
 
-# ✅ 請設定你自己的備份資料夾（例：D:/feedbacks）
-BACKUP_FOLDER = Path(r"C:\Users\tbana\Desktop\客戶建議")
+# --- 備份資料夾（Render 支援） ---
+BACKUP_FOLDER = Path("/data/feedbacks")
 BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
+
+# --- 環境變數讀取 Email 發信資訊 ---
+SMTP_EMAIL = os.environ.get("SMTP_EMAIL")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
+TO_EMAIL = os.environ.get("TO_EMAIL")
 
 # --- 表單 HTML ---
 HTML_FORM = '''
@@ -75,15 +86,37 @@ def is_valid_email(email):
     pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
     return re.match(pattern, email)
 
-def save_to_excel(data, name):
-    safe_name = re.sub(r"[^\w\u4e00-\u9fff]", "_", name)
-    filepath = BACKUP_FOLDER / f"{safe_name}.xlsx"
+def save_to_excel(data, filename):
+    filepath = BACKUP_FOLDER / filename
     wb = Workbook()
     ws = wb.active
     ws.append(list(data.keys()))
     ws.append(list(data.values()))
     wb.save(filepath)
-    print(f"✅ 資料已儲存為 Excel：{filepath}")
+    return filepath
+
+def send_email_with_attachment(data, filepath):
+    subject = f"新填寫問卷 - {data['姓名']}"
+    body = "\n".join([f"{k}: {v}" for k, v in data.items()])
+
+    msg = MIMEMultipart()
+    msg['From'] = SMTP_EMAIL
+    msg['To'] = TO_EMAIL
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    with open(filepath, "rb") as f:
+        part = MIMEApplication(f.read(), Name=filepath.name)
+        part['Content-Disposition'] = f'attachment; filename="{filepath.name}"'
+        msg.attach(part)
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(SMTP_EMAIL, SMTP_PASSWORD)
+            server.send_message(msg)
+        print("✅ 郵件已發送")
+    except Exception as e:
+        print(f"❌ 發信失敗：{e}")
 
 def send_to_meta(data, ip):
     event_time = int(datetime.now().timestamp())
@@ -124,10 +157,9 @@ def send_to_meta(data, ip):
     }
 
     print("📤 上傳至 Meta Payload：", json.dumps(payload, indent=2, ensure_ascii=False))
-
     try:
         res = requests.post(
-            f"https://graph.facebook.com/v23.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}",
+            f"https://graph.facebook.com/v18.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}",
             json=payload,
             timeout=10
         )
@@ -149,17 +181,20 @@ def submit():
         "Email": request.form.get("email", ""),
         "電話": request.form.get("phone", ""),
         "服務態度是否清楚易懂": request.form["attitude"],
-        "建議": request.form.get("suggestion", "")
+        "建議": request.form.get("suggestion", ""),
+        "填寫時間": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "127.0.0.1")
     if ip == "127.0.0.1":
-        ip = "8.8.8.8"  # 模擬真實 IP 避免被拒
+        ip = "8.8.8.8"
 
-    # 儲存 Excel
-    save_to_excel(data, data["姓名"])
+    # 儲存並寄信
+    safe_filename = re.sub(r"[^\w\u4e00-\u9fff]", "_", data["姓名"]) + ".xlsx"
+    excel_path = save_to_excel(data, safe_filename)
+    send_email_with_attachment(data, excel_path)
 
-    # 上傳至 Meta
+    # 上傳 Meta
     send_to_meta(data, ip)
 
     return render_template_string(THANK_YOU_PAGE)
