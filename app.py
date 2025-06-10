@@ -8,6 +8,7 @@ from email.message import EmailMessage
 from datetime import datetime
 import re
 import os
+import random
 
 app = Flask(__name__)
 
@@ -16,7 +17,7 @@ PIXEL_ID = os.getenv("PIXEL_ID")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 API_URL = f"https://graph.facebook.com/v18.0/{PIXEL_ID}/events"
 CURRENCY = "TWD"
-DEFAULT_VALUE = 20000
+PRICE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 
 # === Email & 備份設定 ===
 FROM_EMAIL = os.getenv("FROM_EMAIL")
@@ -45,9 +46,9 @@ HTML_FORM = '''
         Email：<input type="email" name="email"><br><br>
         電話：<input type="text" name="phone"><br><br>
         您覺得小編的服務態度如何？解說是否清楚易懂？<br>
-        <textarea name="您覺得小編的服務態度如何？解說是否清楚易懂？" rows="3" cols="40"></textarea><br><br>
+        <textarea name="satisfaction" rows="3" cols="40"></textarea><br><br>
         您對我們的服務有什麼建議？<br>
-        <textarea name="您對我們的服務有什麼建議？" rows="3" cols="40"></textarea><br><br>
+        <textarea name="suggestion" rows="3" cols="40"></textarea><br><br>
         <button type="submit">送出</button>
     </form>
 </body>
@@ -85,12 +86,13 @@ def send_email_with_attachment(file_path, form_data):
 性別：{form_data['性別']}
 Email：{form_data['Email']}
 電話：{form_data['電話']}
+價格（隨機）：{form_data['成交金額']} 元
 
 ✅ 滿意度調查：
-{form_data['您覺得小編的服務態度如何？解說是否清楚易懂？']}
+{form_data['滿意度調查']}
 
 💡 建議回饋：
-{form_data['您對我們的服務有什麼建議？']}
+{form_data['建議內容']}
 
 提交時間：{form_data['提交時間']}
 
@@ -114,8 +116,9 @@ def submit():
     gender = request.form.get("gender", "female")
     email = request.form.get("email", "").strip().lower()
     phone = normalize_phone(request.form.get("phone", "").strip())
-    satisfaction = request.form.get("您覺得小編的服務態度如何？解說是否清楚易懂？", "").strip()
-    suggestion = request.form.get("您對我們的服務有什麼建議？", "").strip()
+    satisfaction = request.form.get("satisfaction", "").strip()
+    suggestion = request.form.get("suggestion", "").strip()
+    value = random.choice(PRICE_CHOICES)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{name}_{timestamp}.xlsx"
@@ -127,8 +130,9 @@ def submit():
         "性別": gender,
         "Email": email,
         "電話": phone,
-        "您覺得小編的服務態度如何？解說是否清楚易懂？": satisfaction,
-        "您對我們的服務有什麼建議？": suggestion,
+        "成交金額": value,
+        "滿意度調查": satisfaction,
+        "建議內容": suggestion,
         "提交時間": timestamp,
     }
 
@@ -161,7 +165,7 @@ def submit():
             "user_data": user_data,
             "custom_data": {
                 "currency": CURRENCY,
-                "value": DEFAULT_VALUE,
+                "value": value,
                 "external_id": hash_sha256(name + phone + email)
             },
             "action_source": "website"
