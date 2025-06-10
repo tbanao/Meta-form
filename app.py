@@ -8,21 +8,22 @@ from email.message import EmailMessage
 from datetime import datetime
 import re
 import random
+import os
 
 app = Flask(__name__)
 
-# === 直接寫死的 Meta Conversion API 設定 ===
+# === Meta Conversion API 設定 ===
 PIXEL_ID = "1664521517602334"
 ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"
 API_URL = f"https://graph.facebook.com/v23.0/{PIXEL_ID}/events"
 CURRENCY = "TWD"
 VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 
-# === Email 設定（保持環境變數或改成寫死都可） ===
-FROM_EMAIL = "你的寄件 email"
-EMAIL_PASSWORD = "你的 email 密碼"
-TO_EMAIL_1 = "第一位收件人"
-TO_EMAIL_2 = "第二位收件人"
+# === Email 設定（密碼改為環境變數） ===
+FROM_EMAIL = "your@gmail.com"
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+TO_EMAIL_1 = "email1@example.com"
+TO_EMAIL_2 = "email2@example.com"
 
 BACKUP_FOLDER = Path("form_backups")
 BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
@@ -72,6 +73,7 @@ def save_to_excel(data, file_path):
     wb.save(file_path)
 
 def send_email_with_attachment(file_path):
+    assert EMAIL_PASSWORD is not None, "環境變數 EMAIL_PASSWORD 尚未設定"
     msg = EmailMessage()
     msg['Subject'] = '新客戶表單回報'
     msg['From'] = FROM_EMAIL
