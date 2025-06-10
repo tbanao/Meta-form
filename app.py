@@ -1,5 +1,3 @@
-ekio kfww mtuk blnl
-
 from flask import Flask, request, render_template_string
 import os
 import hashlib
@@ -84,7 +82,7 @@ def clean_phone(phone):
 
 def is_valid_email(email):
     pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
-    return re.match(pattern, email)
+    return bool(re.match(pattern, email))
 
 def save_to_excel(data, filename):
     filepath = BACKUP_FOLDER / filename
@@ -96,6 +94,10 @@ def save_to_excel(data, filename):
     return filepath
 
 def send_email_with_attachment(data, filepath):
+    if not SMTP_EMAIL or not SMTP_PASSWORD or not TO_EMAIL:
+        print("❌ 缺少 SMTP 設定，無法發信")
+        return
+
     subject = f"新填寫問卷 - {data['姓名']}"
     body = "\n".join([f"{k}: {v}" for k, v in data.items()])
 
@@ -120,7 +122,8 @@ def send_email_with_attachment(data, filepath):
 
 def send_to_meta(data, ip):
     event_time = int(datetime.now().timestamp())
-    event_id = hashlib.md5((data.get("Email", "") + str(event_time)).encode("utf-8")).hexdigest()
+    uid = data.get("Email", "") or data.get("電話", "") or data.get("姓名", "")
+    event_id = hashlib.md5((uid + str(event_time)).encode("utf-8")).hexdigest()
     value = random.choice(VALUE_CHOICES)
     city = random.choice(CITIES)
 
@@ -130,7 +133,7 @@ def send_to_meta(data, ip):
         "ct": hash_data(city),
         "country": hash_data("tw"),
         "client_ip_address": ip,
-        "external_id": hash_data(data.get("Email", "") or event_id)
+        "external_id": hash_data(uid)
     }
 
     if data.get("Email") and is_valid_email(data["Email"]):
