@@ -22,8 +22,8 @@ CURRENCY = "TWD"
 VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
 
-# --- 備份資料夾（Render 支援） ---
-BACKUP_FOLDER = Path("/data/feedbacks")
+# --- 備份資料夾（支援 Render / 本機） ---
+BACKUP_FOLDER = Path("./data/feedbacks")
 BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
 
 # --- 環境變數讀取 Email 發信資訊 ---
