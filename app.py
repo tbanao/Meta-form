@@ -20,10 +20,9 @@ VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 
 # ====== Email 設定（直接填） ======
 FROM_EMAIL = "thairayshin@gmail.com"
-EMAIL_PASSWORD = "omts dcpq ngod cfaq"
+EMAIL_PASSWORD = "omtsdcpqngodcfaq"
 TO_EMAIL_1 = "z316le725@icloud.com"
 TO_EMAIL_2 = "tbanao@icloud.com"
-
 BACKUP_FOLDER = Path("form_backups")
 BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
 
@@ -71,12 +70,19 @@ def save_to_excel(data, file_path):
     ws.append(list(data.values()))
     wb.save(file_path)
 
-def send_email_with_attachment(file_path):
+def build_email_content(data):
+    # 將表單資料轉成可閱讀的純文字
+    lines = []
+    for key, value in data.items():
+        lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+def send_email_with_attachment(file_path, raw_data):
     msg = EmailMessage()
     msg['Subject'] = '新客戶表單回報'
     msg['From'] = FROM_EMAIL
     msg['To'] = [TO_EMAIL_1, TO_EMAIL_2]
-    msg.set_content("請查收附件中的客戶填寫資料。")
+    msg.set_content("客戶填寫內容如下：\n\n" + build_email_content(raw_data))
 
     with open(file_path, 'rb') as f:
         msg.add_attachment(f.read(), maintype='application',
@@ -148,9 +154,13 @@ def submit():
     }
 
     headers = {"Content-Type": "application/json"}
-    requests.post(API_URL, headers=headers, json=payload, params={"access_token": ACCESS_TOKEN})
+    response = requests.post(API_URL, headers=headers, json=payload, params={"access_token": ACCESS_TOKEN})
 
-    send_email_with_attachment(file_path)
+    # 將 Meta 回傳內容列印到 log
+    print("Meta 上傳結果：", response.status_code)
+    print("Meta 回應內容：", response.text)
+
+    send_email_with_attachment(file_path, raw_data)
     return "感謝您提供寶貴建議"
 
 if __name__ == "__main__":
