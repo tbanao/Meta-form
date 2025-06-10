@@ -80,19 +80,19 @@ def send_email_with_attachment(file_path, form_data):
 
     content = f"""您有一份新的客戶填寫資料：
 
-姓名：{form_data['name']}
-生日：{form_data['birthday']}
-性別：{form_data['gender']}
-Email：{form_data['email']}
-電話：{form_data['phone']}
+姓名：{form_data['姓名']}
+生日：{form_data['生日']}
+性別：{form_data['性別']}
+Email：{form_data['Email']}
+電話：{form_data['電話']}
 
 ✅ 滿意度調查：
-{form_data['satisfaction']}
+{form_data['您覺得小編的服務態度如何？解說是否清楚易懂？']}
 
 💡 建議回饋：
-{form_data['suggestion']}
+{form_data['您對我們的服務有什麼建議？']}
 
-提交時間：{form_data['timestamp']}
+提交時間：{form_data['提交時間']}
 
 附件為完整填寫內容 Excel 檔案。
 """
@@ -122,18 +122,20 @@ def submit():
     file_path = BACKUP_FOLDER / filename
 
     form_data = {
-        "name": name,
-        "birthday": birthday,
-        "gender": gender,
-        "email": email,
-        "phone": phone,
-        "satisfaction": satisfaction,
-        "suggestion": suggestion,
-        "timestamp": timestamp,
+        "姓名": name,
+        "生日": birthday,
+        "性別": gender,
+        "Email": email,
+        "電話": phone,
+        "您覺得小編的服務態度如何？解說是否清楚易懂？": satisfaction,
+        "您對我們的服務有什麼建議？": suggestion,
+        "提交時間": timestamp,
     }
 
     save_to_excel(form_data, file_path)
+    send_email_with_attachment(file_path, form_data)
 
+    # === Meta CAPI 上傳 ===
     user_data = {
         "fn": hash_sha256(name),
         "ge": "m" if gender == "male" else "f",
@@ -168,8 +170,6 @@ def submit():
 
     headers = {"Content-Type": "application/json"}
     requests.post(API_URL, headers=headers, json=payload, params={"access_token": ACCESS_TOKEN})
-
-    send_email_with_attachment(file_path, form_data)
 
     return "提交成功！感謝您的填寫。"
 
