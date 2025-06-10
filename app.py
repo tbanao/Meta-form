@@ -175,7 +175,9 @@ def submit():
     }
 
     headers = {"Content-Type": "application/json"}
-    requests.post(API_URL, headers=headers, json=payload, params={"access_token": ACCESS_TOKEN})
+    response = requests.post(API_URL, headers=headers, json=payload, params={"access_token": ACCESS_TOKEN})
+    print("Meta 回傳狀態：", response.status_code)
+    print("Meta 回傳內容：", response.text)
 
     return '''
     <html>
