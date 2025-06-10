@@ -45,9 +45,9 @@ HTML_FORM = '''
         Email：<input type="email" name="email"><br><br>
         電話：<input type="text" name="phone"><br><br>
         您覺得小編的服務態度如何？解說是否清楚易懂？<br>
-        <textarea name="satisfaction" rows="3" cols="40"></textarea><br><br>
+        <textarea name="您覺得小編的服務態度如何？解說是否清楚易懂？" rows="3" cols="40"></textarea><br><br>
         您對我們的服務有什麼建議？<br>
-        <textarea name="suggestion" rows="3" cols="40"></textarea><br><br>
+        <textarea name="您對我們的服務有什麼建議？" rows="3" cols="40"></textarea><br><br>
         <button type="submit">送出</button>
     </form>
 </body>
@@ -114,8 +114,8 @@ def submit():
     gender = request.form.get("gender", "female")
     email = request.form.get("email", "").strip().lower()
     phone = normalize_phone(request.form.get("phone", "").strip())
-    satisfaction = request.form.get("satisfaction", "").strip()
-    suggestion = request.form.get("suggestion", "").strip()
+    satisfaction = request.form.get("您覺得小編的服務態度如何？解說是否清楚易懂？", "").strip()
+    suggestion = request.form.get("您對我們的服務有什麼建議？", "").strip()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{name}_{timestamp}.xlsx"
