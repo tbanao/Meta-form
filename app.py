@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, send_file
 import csv
 import os
 import hashlib
@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # --- Meta Conversion API 設定 ---
 PIXEL_ID = "1664521517602334"
-ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"  # ← 替換成你自己的 Access Token
+ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"
 CURRENCY = "TWD"
 VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
@@ -95,11 +95,10 @@ def send_to_meta(email, phone, gender, birthdate, ip, name):
     else:
         print(f"⚠️ 電話格式錯誤，略過 ph：{raw_phone}")
 
-    # 姓名（上傳至 ln）
+    # 姓名（ln）
     if name:
         user_data["ln"] = hash_data(name)
 
-    # 其他欄位（全數雜湊）
     user_data["ge"] = hash_data("m" if gender == "男" else "f")
     user_data["db"] = hash_data(birthdate.replace("-", ""))
     user_data["country"] = hash_data("tw")
@@ -121,16 +120,7 @@ def send_to_meta(email, phone, gender, birthdate, ip, name):
         }]
     }
 
-    # Debug log
-    print("📥 雜湊前 email：", raw_email)
-    print("📥 雜湊後 email：", user_data.get("em", "（略過）"))
-    print("📞 雜湊前 phone：", raw_phone)
-    print("📞 雜湊後 phone：", user_data.get("ph", "（略過）"))
-    print("👤 姓名雜湊：", user_data.get("ln", "（略過）"))
-    print("🌍 城市（ct）：", city, "→", user_data["ct"])
-    print("🆔 external_id：", user_data["external_id"])
-    print("📤 即將送出 Meta payload：")
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    print("📤 上傳內容：", json.dumps(payload, indent=2, ensure_ascii=False))
 
     try:
         res = requests.post(
@@ -142,7 +132,7 @@ def send_to_meta(email, phone, gender, birthdate, ip, name):
     except Exception as e:
         print(f"❌ 上傳至 Meta 失敗：{e}")
 
-# --- 表單路由 ---
+# --- 路由 ---
 @app.route("/", methods=["GET"])
 def form():
     return render_template_string(HTML_FORM)
@@ -161,7 +151,6 @@ def submit():
 
     ip = request.remote_addr or "127.0.0.1"
 
-    # 儲存到 CSV
     file_exists = os.path.isfile(CSV_FILE)
     with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=data.keys())
@@ -169,11 +158,17 @@ def submit():
             writer.writeheader()
         writer.writerow(data)
 
-    # 回傳給 Meta（新增 name 傳入）
     send_to_meta(data["Email"], data["電話"], data["性別"], data["出生年月日"], ip, data["姓名"])
 
     return render_template_string(THANK_YOU_PAGE)
 
-# --- 執行 ---
+@app.route("/download", methods=["GET"])
+def download_csv():
+    if os.path.exists(CSV_FILE):
+        return send_file(CSV_FILE, as_attachment=True, download_name="feedback.csv", mimetype="text/csv")
+    else:
+        return "尚未有任何填寫資料", 404
+
+# --- 啟動 ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=3000)
