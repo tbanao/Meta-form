@@ -1,5 +1,4 @@
-from flask import Flask, request, render_template_string, send_file
-import csv
+from flask import Flask, request, render_template_string
 import os
 import hashlib
 import requests
@@ -7,16 +6,21 @@ import random
 import json
 import re
 from datetime import datetime
+from openpyxl import Workbook
+from pathlib import Path
 
 app = Flask(__name__)
 
-# --- Meta Conversion API 設定 ---
+# --- 設定區 ---
 PIXEL_ID = "1664521517602334"
 ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"
 CURRENCY = "TWD"
 VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
-CSV_FILE = "feedback.csv"
+
+# ✅ 請設定你自己的備份資料夾（例：D:/feedbacks）
+BACKUP_FOLDER = Path(r"C:\Users\tbana\Desktop\客戶建議")
+BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
 
 # --- 表單 HTML ---
 HTML_FORM = '''
@@ -30,8 +34,8 @@ HTML_FORM = '''
         出生年月日：<input type="date" name="birthdate" required><br><br>
         性別：
         <select name="gender" required><option value="男">男</option><option value="女">女</option></select><br><br>
-        Email：<input type="email" name="email" required><br><br>
-        電話：<input type="tel" name="phone" required><br><br>
+        Email：<input type="email" name="email"><br><br>
+        電話：<input type="tel" name="phone"><br><br>
         您覺得小編的服務態度如何？解說是否清楚易懂？<br>
         <textarea name="attitude" rows="4" cols="50" required></textarea><br><br>
         您對我們的服務有什麼建議？<br>
@@ -71,40 +75,39 @@ def is_valid_email(email):
     pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
     return re.match(pattern, email)
 
-# --- 上傳至 Meta ---
-def send_to_meta(email, phone, gender, birthdate, ip, name):
+def save_to_excel(data, name):
+    safe_name = re.sub(r"[^\w\u4e00-\u9fff]", "_", name)
+    filepath = BACKUP_FOLDER / f"{safe_name}.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(list(data.keys()))
+    ws.append(list(data.values()))
+    wb.save(filepath)
+    print(f"✅ 資料已儲存為 Excel：{filepath}")
+
+def send_to_meta(data, ip):
     event_time = int(datetime.now().timestamp())
-    event_id = hashlib.md5((email + str(event_time)).encode("utf-8")).hexdigest()
+    event_id = hashlib.md5((data.get("Email", "") + str(event_time)).encode("utf-8")).hexdigest()
     value = random.choice(VALUE_CHOICES)
     city = random.choice(CITIES)
 
-    raw_email = email.strip()
-    raw_phone = clean_phone(phone)
+    user_data = {
+        "ge": hash_data("m" if data["性別"] == "男" else "f"),
+        "db": hash_data(data["出生年月日"].replace("-", "")),
+        "ct": hash_data(city),
+        "country": hash_data("tw"),
+        "client_ip_address": ip,
+        "external_id": hash_data(data.get("Email", "") or event_id)
+    }
 
-    user_data = {}
-
-    # Email
-    if raw_email and is_valid_email(raw_email):
-        user_data["em"] = hash_data(raw_email)
-    else:
-        print(f"⚠️ Email 格式錯誤，略過 em：{raw_email}")
-
-    # Phone
-    if raw_phone and len(raw_phone) >= 9:
-        user_data["ph"] = hash_data(raw_phone)
-    else:
-        print(f"⚠️ 電話格式錯誤，略過 ph：{raw_phone}")
-
-    # 姓名（ln）
-    if name:
-        user_data["ln"] = hash_data(name)
-
-    user_data["ge"] = hash_data("m" if gender == "男" else "f")
-    user_data["db"] = hash_data(birthdate.replace("-", ""))
-    user_data["country"] = hash_data("tw")
-    user_data["client_ip_address"] = ip
-    user_data["ct"] = hash_data(city)
-    user_data["external_id"] = hash_data(raw_email or event_id)
+    if data.get("Email") and is_valid_email(data["Email"]):
+        user_data["em"] = hash_data(data["Email"])
+    if data.get("電話"):
+        cleaned = clean_phone(data["電話"])
+        if len(cleaned) >= 9:
+            user_data["ph"] = hash_data(cleaned)
+    if data.get("姓名"):
+        user_data["ln"] = hash_data(data["姓名"])
 
     payload = {
         "data": [{
@@ -120,17 +123,17 @@ def send_to_meta(email, phone, gender, birthdate, ip, name):
         }]
     }
 
-    print("📤 上傳內容：", json.dumps(payload, indent=2, ensure_ascii=False))
+    print("📤 上傳至 Meta Payload：", json.dumps(payload, indent=2, ensure_ascii=False))
 
     try:
         res = requests.post(
-            f"https://graph.facebook.com/v18.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}",
+            f"https://graph.facebook.com/v23.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}",
             json=payload,
             timeout=10
         )
         print(f"✅ Meta 回傳：{res.status_code} - {res.text}")
     except Exception as e:
-        print(f"❌ 上傳至 Meta 失敗：{e}")
+        print(f"❌ 上傳 Meta 失敗：{e}")
 
 # --- 路由 ---
 @app.route("/", methods=["GET"])
@@ -143,32 +146,24 @@ def submit():
         "姓名": request.form["name"],
         "出生年月日": request.form["birthdate"],
         "性別": request.form["gender"],
-        "Email": request.form["email"],
-        "電話": request.form["phone"],
+        "Email": request.form.get("email", ""),
+        "電話": request.form.get("phone", ""),
         "服務態度是否清楚易懂": request.form["attitude"],
         "建議": request.form.get("suggestion", "")
     }
 
-    ip = request.remote_addr or "127.0.0.1"
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "127.0.0.1")
+    if ip == "127.0.0.1":
+        ip = "8.8.8.8"  # 模擬真實 IP 避免被拒
 
-    file_exists = os.path.isfile(CSV_FILE)
-    with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=data.keys())
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(data)
+    # 儲存 Excel
+    save_to_excel(data, data["姓名"])
 
-    send_to_meta(data["Email"], data["電話"], data["性別"], data["出生年月日"], ip, data["姓名"])
+    # 上傳至 Meta
+    send_to_meta(data, ip)
 
     return render_template_string(THANK_YOU_PAGE)
 
-@app.route("/download", methods=["GET"])
-def download_csv():
-    if os.path.exists(CSV_FILE):
-        return send_file(CSV_FILE, as_attachment=True, download_name="feedback.csv", mimetype="text/csv")
-    else:
-        return "尚未有任何填寫資料", 404
-
-# --- 啟動 ---
+# --- 執行 ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=3000)
