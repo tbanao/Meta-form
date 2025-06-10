@@ -45,10 +45,13 @@ HTML_FORM = '''
         </select><br><br>
         Email：<input type="email" name="email"><br><br>
         電話：<input type="text" name="phone"><br><br>
+
         您覺得小編的服務態度如何？解說是否清楚易懂？<br>
         <textarea name="satisfaction" rows="3" cols="40"></textarea><br><br>
+
         您對我們的服務有什麼建議？<br>
         <textarea name="suggestion" rows="3" cols="40"></textarea><br><br>
+
         <button type="submit">送出</button>
     </form>
 </body>
@@ -89,10 +92,10 @@ Email：{form_data['Email']}
 價格（隨機）：{form_data['成交金額']} 元
 
 ✅ 滿意度調查：
-{form_data['滿意度調查']}
+{form_data['您覺得小編的服務態度如何？解說是否清楚易懂？']}
 
 💡 建議回饋：
-{form_data['建議內容']}
+{form_data['您對我們的服務有什麼建議？']}
 
 提交時間：{form_data['提交時間']}
 
@@ -131,8 +134,8 @@ def submit():
         "Email": email,
         "電話": phone,
         "成交金額": value,
-        "滿意度調查": satisfaction,
-        "建議內容": suggestion,
+        "您覺得小編的服務態度如何？解說是否清楚易懂？": satisfaction,
+        "您對我們的服務有什麼建議？": suggestion,
         "提交時間": timestamp,
     }
 
@@ -175,7 +178,20 @@ def submit():
     headers = {"Content-Type": "application/json"}
     requests.post(API_URL, headers=headers, json=payload, params={"access_token": ACCESS_TOKEN})
 
-    return "提交成功！感謝您的填寫。"
+    return '''
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="refresh" content="5;url=/" />
+        <title>感謝您的回覆</title>
+    </head>
+    <body>
+        <h2>感謝您提供寶貴建議！</h2>
+        <p>我們已收到您的回覆，後續將依您提供的建議持續優化服務 🙏</p>
+        <p>5 秒後將自動返回首頁...</p>
+    </body>
+    </html>
+    '''
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
