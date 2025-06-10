@@ -44,9 +44,9 @@ HTML_FORM = '''
         </select><br><br>
         Email：<input type="email" name="email"><br><br>
         電話：<input type="text" name="phone"><br><br>
-        小編服務是否清楚易懂？<br>
+        您覺得小編的服務態度如何？解說是否清楚易懂？<br>
         <textarea name="satisfaction" rows="3" cols="40"></textarea><br><br>
-        有任何建議嗎？<br>
+        您對我們的服務有什麼建議？<br>
         <textarea name="suggestion" rows="3" cols="40"></textarea><br><br>
         <button type="submit">送出</button>
     </form>
@@ -72,23 +72,36 @@ def save_to_excel(data, file_path):
     ws.append(list(data.values()))
     wb.save(file_path)
 
-def send_email_with_attachment(file_path, raw_data):
+def send_email_with_attachment(file_path, form_data):
     msg = EmailMessage()
     msg['Subject'] = '新客戶表單回報'
     msg['From'] = FROM_EMAIL
     msg['To'] = [TO_EMAIL_1, TO_EMAIL_2]
 
-    # 客戶填寫內容（純文字）
-    body = "\n".join([f"{key}：{value}" for key, value in raw_data.items()])
-    msg.set_content(body)
+    content = f"""您有一份新的客戶填寫資料：
+
+姓名：{form_data['name']}
+生日：{form_data['birthday']}
+性別：{form_data['gender']}
+Email：{form_data['email']}
+電話：{form_data['phone']}
+
+✅ 滿意度調查：
+{form_data['satisfaction']}
+
+💡 建議回饋：
+{form_data['suggestion']}
+
+提交時間：{form_data['timestamp']}
+
+附件為完整填寫內容 Excel 檔案。
+"""
+    msg.set_content(content)
 
     with open(file_path, 'rb') as f:
-        msg.add_attachment(
-            f.read(),
-            maintype='application',
-            subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            filename=file_path.name
-        )
+        msg.add_attachment(f.read(), maintype='application',
+                           subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                           filename=file_path.name)
 
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
         smtp.login(FROM_EMAIL, EMAIL_PASSWORD)
@@ -108,19 +121,19 @@ def submit():
     filename = f"{name}_{timestamp}.xlsx"
     file_path = BACKUP_FOLDER / filename
 
-    raw_data = {
-        "姓名": name,
-        "生日": birthday,
-        "性別": gender,
-        "Email": email,
-        "電話": phone,
-        "滿意度回饋": satisfaction,
-        "建議內容": suggestion,
-        "提交時間": timestamp,
+    form_data = {
+        "name": name,
+        "birthday": birthday,
+        "gender": gender,
+        "email": email,
+        "phone": phone,
+        "satisfaction": satisfaction,
+        "suggestion": suggestion,
+        "timestamp": timestamp,
     }
-    save_to_excel(raw_data, file_path)
 
-    # CAPI user_data 雜湊處理
+    save_to_excel(form_data, file_path)
+
     user_data = {
         "fn": hash_sha256(name),
         "ge": "m" if gender == "male" else "f",
@@ -156,8 +169,7 @@ def submit():
     headers = {"Content-Type": "application/json"}
     requests.post(API_URL, headers=headers, json=payload, params={"access_token": ACCESS_TOKEN})
 
-    # 寄信：附檔 + 文字內容
-    send_email_with_attachment(file_path, raw_data)
+    send_email_with_attachment(file_path, form_data)
 
     return "提交成功！感謝您的填寫。"
 
