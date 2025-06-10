@@ -1,37 +1,33 @@
 from flask import Flask, request, render_template_string
-import os
-import hashlib
-import requests
-import random
-import json
-import re
-import smtplib
-from datetime import datetime
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.application import MIMEApplication
 from openpyxl import Workbook
 from pathlib import Path
+import hashlib
+import requests
+import smtplib
+from email.message import EmailMessage
+from datetime import datetime
+import re
+import os
 
 app = Flask(__name__)
 
-# --- Meta Conversion API 設定 ---
-PIXEL_ID = "1664521517602334"
-ACCESS_TOKEN = "EAAH1oqWMsq8BO37rKconweZBXXPFQac7NCNxFbD40RN9SopOp2t3o5xEPQ1zbkrOkKIUoBGPZBXbsxStkXsniH9EE777qANZAGKXNIgMtliLHZBntS2VTp7uDbLhNBZAFwZBShVw8QyOXbYSDFfwqxQCWtzJYbFzktZCJpD3BkyYeaTcOMP2zz0MnZCfppTCYGb8uQZDZD"
+# === Meta Conversion API 設定 ===
+PIXEL_ID = os.getenv("PIXEL_ID")
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+API_URL = f"https://graph.facebook.com/v18.0/{PIXEL_ID}/events"
 CURRENCY = "TWD"
-VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
-CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
+DEFAULT_VALUE = 20000
 
-# --- 備份資料夾（支援 Render / 本機） ---
-BACKUP_FOLDER = Path("./data/feedbacks")
+# === Email & 備份設定 ===
+FROM_EMAIL = os.getenv("FROM_EMAIL")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+TO_EMAIL_1 = os.getenv("TO_EMAIL_1")
+TO_EMAIL_2 = os.getenv("TO_EMAIL_2")
+
+BACKUP_FOLDER = Path("form_backups")
 BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
 
-# --- 環境變數讀取 Email 發信資訊 ---
-SMTP_EMAIL = os.environ.get("SMTP_EMAIL")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
-TO_EMAIL = os.environ.get("TO_EMAIL")
-
-# --- 表單 HTML ---
+# === HTML 表單 ===
 HTML_FORM = '''
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -40,168 +36,122 @@ HTML_FORM = '''
     <h2>服務滿意度調查</h2>
     <form action="/submit" method="post">
         姓名：<input type="text" name="name" required><br><br>
-        出生年月日：<input type="date" name="birthdate" required><br><br>
+        出生年月日：<input type="date" name="birthday"><br><br>
         性別：
-        <select name="gender" required><option value="男">男</option><option value="女">女</option></select><br><br>
+        <select name="gender">
+            <option value="female">女性</option>
+            <option value="male">男性</option>
+        </select><br><br>
         Email：<input type="email" name="email"><br><br>
-        電話：<input type="tel" name="phone"><br><br>
-        您覺得小編的服務態度如何？解說是否清楚易懂？<br>
-        <textarea name="attitude" rows="4" cols="50" required></textarea><br><br>
-        您對我們的服務有什麼建議？<br>
-        <textarea name="suggestion" rows="4" cols="50"></textarea><br><br>
-        <input type="submit" value="送出">
+        電話：<input type="text" name="phone"><br><br>
+        小編服務是否清楚易懂？<br>
+        <textarea name="satisfaction" rows="3" cols="40"></textarea><br><br>
+        有任何建議嗎？<br>
+        <textarea name="suggestion" rows="3" cols="40"></textarea><br><br>
+        <button type="submit">送出</button>
     </form>
-    <p style="color: gray; font-size: 14px;">
-        感謝您的建議，我們將傾聽每位顧客的心聲，增加服務改善。<br>
-        以上個人相關資訊僅做為售後服務紀錄，不做其他用途。
-    </p>
 </body>
 </html>
 '''
 
-THANK_YOU_PAGE = '''
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head><meta charset="UTF-8"><title>感謝您的填寫</title></head>
-<body>
-    <h3>感謝您的建議，我們將傾聽每位顧客的心聲，增加服務改善。</h3>
-    <p>以上個人相關資訊僅做為售後服務紀錄，不做其他用途。</p>
-</body>
-</html>
-'''
+@app.route('/')
+def index():
+    return render_template_string(HTML_FORM)
 
-# --- 工具函式 ---
-def hash_data(value):
-    return hashlib.sha256(value.strip().lower().encode("utf-8")).hexdigest() if value else ""
+def hash_sha256(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
-def clean_phone(phone):
-    phone = re.sub(r"[^\d]", "", phone)
-    if phone.startswith("09"):
-        phone = "886" + phone[1:]
-    return phone
+def normalize_phone(phone):
+    cleaned = re.sub(r"[^\d]", "", phone)
+    return "886" + cleaned.lstrip("0") if cleaned.startswith("09") else cleaned
 
-def is_valid_email(email):
-    pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
-    return bool(re.match(pattern, email))
-
-def save_to_excel(data, filename):
-    filepath = BACKUP_FOLDER / filename
+def save_to_excel(data, file_path):
     wb = Workbook()
     ws = wb.active
     ws.append(list(data.keys()))
     ws.append(list(data.values()))
-    wb.save(filepath)
-    return filepath
+    wb.save(file_path)
 
-def send_email_with_attachment(data, filepath):
-    if not SMTP_EMAIL or not SMTP_PASSWORD or not TO_EMAIL:
-        print("❌ 缺少 SMTP 設定，無法發信")
-        return
+def send_email_with_attachment(file_path):
+    msg = EmailMessage()
+    msg['Subject'] = '新客戶表單回報'
+    msg['From'] = FROM_EMAIL
+    msg['To'] = [TO_EMAIL_1, TO_EMAIL_2]
+    msg.set_content("請查收附件中的客戶填寫資料。")
 
-    subject = f"新填寫問卷 - {data['姓名']}"
-    body = "\n".join([f"{k}: {v}" for k, v in data.items()])
+    with open(file_path, 'rb') as f:
+        msg.add_attachment(f.read(), maintype='application',
+                           subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                           filename=file_path.name)
 
-    msg = MIMEMultipart()
-    msg['From'] = SMTP_EMAIL
-    msg['To'] = TO_EMAIL
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, "plain"))
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+        smtp.login(FROM_EMAIL, EMAIL_PASSWORD)
+        smtp.send_message(msg)
 
-    with open(filepath, "rb") as f:
-        part = MIMEApplication(f.read(), Name=filepath.name)
-        part['Content-Disposition'] = f'attachment; filename="{filepath.name}"'
-        msg.attach(part)
+@app.route('/submit', methods=['POST'])
+def submit():
+    name = request.form.get("name", "").strip()
+    birthday = request.form.get("birthday", "").strip()
+    gender = request.form.get("gender", "female")
+    email = request.form.get("email", "").strip().lower()
+    phone = normalize_phone(request.form.get("phone", "").strip())
+    satisfaction = request.form.get("satisfaction", "").strip()
+    suggestion = request.form.get("suggestion", "").strip()
 
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(SMTP_EMAIL, SMTP_PASSWORD)
-            server.send_message(msg)
-        print("✅ 郵件已發送")
-    except Exception as e:
-        print(f"❌ 發信失敗：{e}")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{name}_{timestamp}.xlsx"
+    file_path = BACKUP_FOLDER / filename
 
-def send_to_meta(data, ip):
-    event_time = int(datetime.now().timestamp())
-    uid = data.get("Email", "") or data.get("電話", "") or data.get("姓名", "")
-    event_id = hashlib.md5((uid + str(event_time)).encode("utf-8")).hexdigest()
-    value = random.choice(VALUE_CHOICES)
-    city = random.choice(CITIES)
+    raw_data = {
+        "姓名": name,
+        "生日": birthday,
+        "性別": gender,
+        "Email": email,
+        "電話": phone,
+        "滿意度回饋": satisfaction,
+        "建議內容": suggestion,
+        "提交時間": timestamp,
+    }
+    save_to_excel(raw_data, file_path)
 
     user_data = {
-        "ge": hash_data("m" if data["性別"] == "男" else "f"),
-        "db": hash_data(data["出生年月日"].replace("-", "")),
-        "ct": hash_data(city),
-        "country": hash_data("tw"),
-        "client_ip_address": ip,
-        "external_id": hash_data(uid)
+        "fn": hash_sha256(name),
+        "ge": "m" if gender == "male" else "f",
+        "country": hash_sha256("tw"),
+        "client_ip_address": request.remote_addr or "1.1.1.1"
     }
-
-    if data.get("Email") and is_valid_email(data["Email"]):
-        user_data["em"] = hash_data(data["Email"])
-    if data.get("電話"):
-        cleaned = clean_phone(data["電話"])
-        if len(cleaned) >= 9:
-            user_data["ph"] = hash_data(cleaned)
-    if data.get("姓名"):
-        user_data["ln"] = hash_data(data["姓名"])
+    if email:
+        user_data["em"] = hash_sha256(email)
+    if phone:
+        user_data["ph"] = hash_sha256(phone)
+    if birthday:
+        try:
+            dt = datetime.strptime(birthday, "%Y-%m-%d")
+            user_data["db"] = dt.strftime("%Y%m%d")
+        except:
+            pass
 
     payload = {
         "data": [{
-            "event_name": "Purchase",
-            "event_time": event_time,
-            "event_id": event_id,
-            "action_source": "website",
+            "event_name": "FormSubmit",
+            "event_time": int(datetime.now().timestamp()),
+            "event_source_url": "https://yourdomain.onrender.com/",
             "user_data": user_data,
             "custom_data": {
                 "currency": CURRENCY,
-                "value": value
-            }
+                "value": DEFAULT_VALUE,
+                "external_id": hash_sha256(name + phone + email)
+            },
+            "action_source": "website"
         }]
     }
 
-    print("📤 上傳至 Meta Payload：", json.dumps(payload, indent=2, ensure_ascii=False))
-    try:
-        res = requests.post(
-            f"https://graph.facebook.com/v18.0/{PIXEL_ID}/events?access_token={ACCESS_TOKEN}",
-            json=payload,
-            timeout=10
-        )
-        print(f"✅ Meta 回傳：{res.status_code} - {res.text}")
-    except Exception as e:
-        print(f"❌ 上傳 Meta 失敗：{e}")
+    headers = {"Content-Type": "application/json"}
+    requests.post(API_URL, headers=headers, json=payload, params={"access_token": ACCESS_TOKEN})
 
-# --- 路由 ---
-@app.route("/", methods=["GET"])
-def form():
-    return render_template_string(HTML_FORM)
+    send_email_with_attachment(file_path)
 
-@app.route("/submit", methods=["POST"])
-def submit():
-    data = {
-        "姓名": request.form["name"],
-        "出生年月日": request.form["birthdate"],
-        "性別": request.form["gender"],
-        "Email": request.form.get("email", ""),
-        "電話": request.form.get("phone", ""),
-        "服務態度是否清楚易懂": request.form["attitude"],
-        "建議": request.form.get("suggestion", ""),
-        "填寫時間": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
+    return "提交成功！感謝您的填寫。"
 
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "127.0.0.1")
-    if ip == "127.0.0.1":
-        ip = "8.8.8.8"
-
-    # 儲存並寄信
-    safe_filename = re.sub(r"[^\w\u4e00-\u9fff]", "_", data["姓名"]) + ".xlsx"
-    excel_path = save_to_excel(data, safe_filename)
-    send_email_with_attachment(data, excel_path)
-
-    # 上傳 Meta
-    send_to_meta(data, ip)
-
-    return render_template_string(THANK_YOU_PAGE)
-
-# --- 執行 ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=3000)
+    app.run(host="0.0.0.0", port=10000)
