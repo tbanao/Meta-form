@@ -13,18 +13,17 @@ from openpyxl import Workbook
 app = Flask(__name__)
 
 # ====== 從環境變數讀取設定 ======
-PIXEL_ID      = os.environ["PIXEL_ID"]
-ACCESS_TOKEN  = os.environ["ACCESS_TOKEN"]
-API_URL       = f"https://graph.facebook.com/v14.0/{PIXEL_ID}/events"
-CURRENCY      = "TWD"
-VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
+DATASET_ID     = os.environ["PIXEL_ID"]      # 其實就是 Dataset ID
+ACCESS_TOKEN   = os.environ["ACCESS_TOKEN"]
+API_URL        = f"https://graph.facebook.com/v14.0/{DATASET_ID}/events"
+CURRENCY       = "TWD"
+VALUE_CHOICES  = [19800, 28000, 28800, 34800, 39800, 45800]
 
 FROM_EMAIL     = os.environ["FROM_EMAIL"]
 EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
 TO_EMAIL_1     = os.environ["TO_EMAIL_1"]
 TO_EMAIL_2     = os.environ["TO_EMAIL_2"]
 
-# ====== 表單備份資料夾 ======
 BACKUP_FOLDER = Path("form_backups")
 BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
 
@@ -96,7 +95,6 @@ def send_email_with_attachment(file_path: Path, raw_data: dict):
 
 @app.route('/submit', methods=['POST'])
 def submit():
-    # 1. 讀表單
     name       = request.form.get("name", "").strip()
     birthday   = request.form.get("birthday", "").strip()
     gender     = request.form.get("gender", "female")
@@ -105,7 +103,6 @@ def submit():
     satisfaction = request.form.get("satisfaction", "").strip()
     suggestion = request.form.get("suggestion", "").strip()
 
-    # 2. 備份 Excel
     ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
     fn        = f"{name}_{ts}.xlsx"
     file_path = BACKUP_FOLDER / fn
@@ -117,13 +114,15 @@ def submit():
     }
     save_to_excel(raw_data, file_path)
 
-    # 3. 組 user_data
+    # Dataset 要有至少一個 user_data
     user_data = {
-        "fn": hash_sha256(name),
-        "ge": "m" if gender=="male" else "f",
-        "country": hash_sha256("tw"),
-        "client_ip_address": request.remote_addr or "0.0.0.0"
+        "external_id": hash_sha256(name + phone + email)
     }
+    # 以下欄位可選，強化 event match quality
+    if name:
+        user_data["fn"] = hash_sha256(name)
+    if gender:
+        user_data["ge"] = "m" if gender == "male" else "f"
     if email:
         user_data["em"] = hash_sha256(email)
     if phone:
@@ -135,38 +134,32 @@ def submit():
         except ValueError:
             pass
 
-    # 4. 構建 payload（加上必填 action_source）
     payload = {
         "data": [{
             "event_name":      "FormSubmit",
             "event_time":      int(datetime.now().timestamp()),
-            "action_source":   "website",
-            "event_source_url":"https://your-domain.com/",  # 改成你自己的
+            "action_source":   "system_generated",    # Dataset 標準 action_source
             "user_data":       user_data,
             "custom_data": {
                 "currency":    CURRENCY,
-                "value":       random.choice(VALUE_CHOICES),
-                "external_id": hash_sha256(name + phone + email)
+                "value":       random.choice(VALUE_CHOICES)
             }
-        }]
+        }],
+        "upload_tag": f"form_{ts}"
     }
 
-    # 5. 呼叫 Meta CAPI
     resp = requests.post(
         API_URL,
         json=payload,
         params={"access_token": ACCESS_TOKEN},
         headers={"Content-Type": "application/json"}
     )
-    print("Meta 上傳結果：", resp.status_code, resp.text)
+    print("Meta Dataset 上傳結果：", resp.status_code, resp.text)
 
-    # 6. 發信通知
     send_email_with_attachment(file_path, raw_data)
-
     return "感謝您提供寶貴建議"
 
 if __name__ == "__main__":
-    # 若環境變數沒設，程式啟動就會錯誤，提醒你去設定
     for var in ["PIXEL_ID","ACCESS_TOKEN","FROM_EMAIL","EMAIL_PASSWORD","TO_EMAIL_1","TO_EMAIL_2"]:
         if var not in os.environ:
             raise RuntimeError(f"❌ 未設定環境變數：{var}")
