@@ -86,7 +86,7 @@ HTML_FORM = '''
             </select><br>
             Email：<input type="email" name="email"><br>
             電話：<input type="text" name="phone"><br>
-            您覺得小編的服務態度如何？解說是否清楚易懂？<br>
+            您覺得我們小編的服務態度如何？解說是否清楚易懂？<br>
             <textarea name="satisfaction" rows="3" cols="40"></textarea><br>
             您對我們的服務有什麼建議？<br>
             <textarea name="suggestion" rows="3" cols="40"></textarea><br>
