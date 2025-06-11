@@ -72,11 +72,29 @@ HTML_FORM = '''
             color: #34495e;
         }
     </style>
+    <!-- Meta Pixel Code -->
+    <script>
+    !function(f,b,e,v,n,t,s)
+    {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+    n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+    if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+    n.queue=[];t=b.createElement(e);t.async=!0;
+    t.src=v;s=b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t,s)}(window, document,'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+    fbq('init', '1664521517602334');
+    fbq('track', 'PageView');
+    </script>
+    <noscript>
+        <img height="1" width="1" style="display:none"
+             src="https://www.facebook.com/tr?id=1664521517602334&ev=PageView&noscript=1"/>
+    </noscript>
+    <!-- End Meta Pixel Code -->
 </head>
 <body>
     <div class="form-container">
         <h2>服務滿意度調查</h2>
-        <form action="/submit" method="post">
+        <form id="feedbackForm" action="/submit" method="post" onsubmit="return beforeSubmit();">
             姓名：<input type="text" name="name" required><br>
             出生年月日：<input type="date" name="birthday"><br>
             性別：
@@ -90,9 +108,22 @@ HTML_FORM = '''
             <textarea name="satisfaction" rows="3" cols="40"></textarea><br>
             您對我們的服務有什麼建議？<br>
             <textarea name="suggestion" rows="3" cols="40"></textarea><br>
+            <!-- 隱藏 event_id 欄位 -->
+            <input type="hidden" name="event_id" id="event_id" value="">
             <button type="submit">送出</button>
         </form>
     </div>
+    <script>
+    function generateEventID() {
+        return 'evt_' + Date.now() + '_' + Math.floor(Math.random()*100000);
+    }
+    function beforeSubmit() {
+        var eid = generateEventID();
+        document.getElementById('event_id').value = eid;
+        fbq('track', 'Purchase', {}, {eventID: eid});
+        return true; // 讓表單繼續送出
+    }
+    </script>
 </body>
 </html>
 '''
@@ -139,13 +170,14 @@ def send_email_with_attachment(file_path: Path, raw_data: dict):
 
 @app.route('/submit', methods=['POST'])
 def submit():
-    name       = request.form.get("name", "").strip()
-    birthday   = request.form.get("birthday", "").strip()
-    gender     = request.form.get("gender", "female")
-    email      = request.form.get("email", "").strip().lower()
-    phone      = normalize_phone(request.form.get("phone", "").strip())
+    name         = request.form.get("name", "").strip()
+    birthday     = request.form.get("birthday", "").strip()
+    gender       = request.form.get("gender", "female")
+    email        = request.form.get("email", "").strip().lower()
+    phone        = normalize_phone(request.form.get("phone", "").strip())
     satisfaction = request.form.get("satisfaction", "").strip()
-    suggestion = request.form.get("suggestion", "").strip()
+    suggestion   = request.form.get("suggestion", "").strip()
+    event_id     = request.form.get("event_id", "")  # 前端傳來
 
     ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
     fn        = f"{name}_{ts}.xlsx"
@@ -180,8 +212,9 @@ def submit():
 
     payload = {
         "data": [{
-            "event_name":    "Purchase",  # ← 統一事件名稱為 Purchase
+            "event_name":    "Purchase",
             "event_time":    int(datetime.now().timestamp()),
+            "event_id":      event_id,  # 帶同一個 event_id
             "action_source": "system_generated",
             "user_data":     user_data,
             "custom_data":   custom_data
