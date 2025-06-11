@@ -13,7 +13,7 @@ from openpyxl import Workbook
 app = Flask(__name__)
 
 # ====== 從環境變數讀取設定 ======
-DATASET_ID     = os.environ["PIXEL_ID"]      # 其實就是 Dataset ID
+DATASET_ID     = os.environ["PIXEL_ID"]      # Render 上用 PIXEL_ID 即 Dataset ID
 ACCESS_TOKEN   = os.environ["ACCESS_TOKEN"]
 API_URL        = f"https://graph.facebook.com/v14.0/{DATASET_ID}/events"
 CURRENCY       = "TWD"
@@ -43,6 +43,15 @@ HTML_FORM = '''
         </select><br><br>
         Email：<input type="email" name="email"><br><br>
         電話：<input type="text" name="phone"><br><br>
+        居住地區：
+        <select name="city">
+            <option value="taipei">台北</option>
+            <option value="newtaipei">新北</option>
+            <option value="taoyuan">桃園</option>
+            <option value="taichung">台中</option>
+            <option value="tainan">台南</option>
+            <option value="kaohsiung">高雄</option>
+        </select><br><br>
         您覺得小編的服務態度如何？解說是否清楚易懂？<br>
         <textarea name="satisfaction" rows="3" cols="40"></textarea><br><br>
         您對我們的服務有什麼建議？<br>
@@ -80,7 +89,6 @@ def send_email_with_attachment(file_path: Path, raw_data: dict):
     msg["From"]    = FROM_EMAIL
     msg["To"]      = [TO_EMAIL_1, TO_EMAIL_2]
     msg.set_content("客戶填寫內容如下：\n\n" + build_email_content(raw_data))
-
     with open(file_path, "rb") as f:
         msg.add_attachment(
             f.read(),
@@ -88,7 +96,6 @@ def send_email_with_attachment(file_path: Path, raw_data: dict):
             subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=file_path.name
         )
-
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(FROM_EMAIL, EMAIL_PASSWORD)
         smtp.send_message(msg)
@@ -102,48 +109,47 @@ def submit():
     phone      = normalize_phone(request.form.get("phone", "").strip())
     satisfaction = request.form.get("satisfaction", "").strip()
     suggestion = request.form.get("suggestion", "").strip()
+    city      = request.form.get("city", "").strip()
 
     ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
     fn        = f"{name}_{ts}.xlsx"
     file_path = BACKUP_FOLDER / fn
     raw_data  = {
         "姓名": name, "生日": birthday, "性別": gender,
-        "Email": email, "電話": phone,
+        "Email": email, "電話": phone, "地區": city,
         "服務態度評價": satisfaction, "建議": suggestion,
         "提交時間": ts
     }
     save_to_excel(raw_data, file_path)
 
-    # Dataset 要有至少一個 user_data
+    # user_data 只傳官方規範
     user_data = {
         "external_id": hash_sha256(name + phone + email)
     }
-    # 以下欄位可選，強化 event match quality
     if name:
         user_data["fn"] = hash_sha256(name)
-    if gender:
-        user_data["ge"] = "m" if gender == "male" else "f"
     if email:
         user_data["em"] = hash_sha256(email)
     if phone:
         user_data["ph"] = hash_sha256(phone)
-    if birthday:
-        try:
-            dt = datetime.strptime(birthday, "%Y-%m-%d")
-            user_data["db"] = dt.strftime("%Y%m%d")
-        except ValueError:
-            pass
+    # ln (姓) 如果你分割的話可以加, 這裡用不到就不加
+
+    # custom_data 可自訂傳遞（地區、性別、生日）
+    custom_data = {
+        "currency":    CURRENCY,
+        "value":       random.choice(VALUE_CHOICES),
+        "gender":      gender,
+        "city":        city,
+        "birthday":    birthday
+    }
 
     payload = {
         "data": [{
             "event_name":      "FormSubmit",
             "event_time":      int(datetime.now().timestamp()),
-            "action_source":   "system_generated",    # Dataset 標準 action_source
+            "action_source":   "system_generated",
             "user_data":       user_data,
-            "custom_data": {
-                "currency":    CURRENCY,
-                "value":       random.choice(VALUE_CHOICES)
-            }
+            "custom_data":     custom_data
         }],
         "upload_tag": f"form_{ts}"
     }
