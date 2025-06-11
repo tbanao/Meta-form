@@ -10,6 +10,15 @@ from pathlib import Path
 from flask import Flask, request, render_template_string
 from openpyxl import Workbook
 
+# ===== 檢查專案資料夾內容 Start =====
+print("==== Render 檢查目錄檔案 ====")
+for filename in os.listdir('.'):
+    print("檔案：", filename)
+for filename in ["uploaded_event_ids.txt", "user_profile_map.pkl"]:
+    print(f"檢查檔案 {filename}: {'存在' if os.path.exists(filename) else '不存在'}")
+print("==============================")
+# ===== 檢查專案資料夾內容 End =====
+
 app = Flask(__name__)
 
 # ====== 從環境變數讀取設定 ======
