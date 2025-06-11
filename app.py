@@ -13,11 +13,11 @@ from openpyxl import Workbook
 app = Flask(__name__)
 
 # ====== 從環境變數讀取設定 ======
-DATASET_ID     = os.environ["PIXEL_ID"]      # Render 上用 PIXEL_ID 即 Dataset ID
-ACCESS_TOKEN   = os.environ["ACCESS_TOKEN"]
-API_URL        = f"https://graph.facebook.com/v14.0/{DATASET_ID}/events"
-CURRENCY       = "TWD"
-VALUE_CHOICES  = [19800, 28000, 28800, 34800, 39800, 45800]
+PIXEL_ID      = os.environ["PIXEL_ID"]
+ACCESS_TOKEN  = os.environ["ACCESS_TOKEN"]
+API_URL       = f"https://graph.facebook.com/v14.0/{PIXEL_ID}/events"
+CURRENCY      = "TWD"
+VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
 
 FROM_EMAIL     = os.environ["FROM_EMAIL"]
 EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
@@ -30,34 +30,69 @@ BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
 HTML_FORM = '''
 <!DOCTYPE html>
 <html lang="zh-TW">
-<head><meta charset="UTF-8"><title>服務滿意度調查</title></head>
+<head>
+    <meta charset="UTF-8">
+    <title>服務滿意度調查</title>
+    <style>
+        body {
+            background: #f2f6fb;
+            font-family: "微軟正黑體", Arial, sans-serif;
+        }
+        .form-container {
+            background: rgba(255,255,255,0.93);
+            max-width: 400px;
+            margin: 60px auto 0 auto;
+            padding: 36px 32px 28px 32px;
+            border-radius: 16px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+            text-align: center;
+        }
+        input, select, textarea, button {
+            width: 90%;
+            padding: 6px 10px;
+            margin: 6px 0 12px 0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 16px;
+            background: #fafbfc;
+        }
+        button {
+            background: #568cf5;
+            color: #fff;
+            border: none;
+            font-weight: bold;
+            padding: 10px 0;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #376ad8;
+        }
+        h2 {
+            margin-top: 0;
+            color: #34495e;
+        }
+    </style>
+</head>
 <body>
-    <h2>服務滿意度調查</h2>
-    <form action="/submit" method="post">
-        姓名：<input type="text" name="name" required><br><br>
-        出生年月日：<input type="date" name="birthday"><br><br>
-        性別：
-        <select name="gender">
-            <option value="female">女性</option>
-            <option value="male">男性</option>
-        </select><br><br>
-        Email：<input type="email" name="email"><br><br>
-        電話：<input type="text" name="phone"><br><br>
-        居住地區：
-        <select name="city">
-            <option value="taipei">台北</option>
-            <option value="newtaipei">新北</option>
-            <option value="taoyuan">桃園</option>
-            <option value="taichung">台中</option>
-            <option value="tainan">台南</option>
-            <option value="kaohsiung">高雄</option>
-        </select><br><br>
-        您覺得小編的服務態度如何？解說是否清楚易懂？<br>
-        <textarea name="satisfaction" rows="3" cols="40"></textarea><br><br>
-        您對我們的服務有什麼建議？<br>
-        <textarea name="suggestion" rows="3" cols="40"></textarea><br><br>
-        <button type="submit">送出</button>
-    </form>
+    <div class="form-container">
+        <h2>服務滿意度調查</h2>
+        <form action="/submit" method="post">
+            姓名：<input type="text" name="name" required><br>
+            出生年月日：<input type="date" name="birthday"><br>
+            性別：
+            <select name="gender">
+                <option value="female">女性</option>
+                <option value="male">男性</option>
+            </select><br>
+            Email：<input type="email" name="email"><br>
+            電話：<input type="text" name="phone"><br>
+            您覺得小編的服務態度如何？解說是否清楚易懂？<br>
+            <textarea name="satisfaction" rows="3" cols="40"></textarea><br>
+            您對我們的服務有什麼建議？<br>
+            <textarea name="suggestion" rows="3" cols="40"></textarea><br>
+            <button type="submit">送出</button>
+        </form>
+    </div>
 </body>
 </html>
 '''
@@ -67,7 +102,7 @@ def index():
     return render_template_string(HTML_FORM)
 
 def hash_sha256(text: str) -> str:
-    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+    return hashlib.sha256(text.encode('utf-8')).hexdigest() if text else ""
 
 def normalize_phone(phone: str) -> str:
     cleaned = re.sub(r"[^\d]", "", phone)
@@ -89,6 +124,7 @@ def send_email_with_attachment(file_path: Path, raw_data: dict):
     msg["From"]    = FROM_EMAIL
     msg["To"]      = [TO_EMAIL_1, TO_EMAIL_2]
     msg.set_content("客戶填寫內容如下：\n\n" + build_email_content(raw_data))
+
     with open(file_path, "rb") as f:
         msg.add_attachment(
             f.read(),
@@ -96,6 +132,7 @@ def send_email_with_attachment(file_path: Path, raw_data: dict):
             subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=file_path.name
         )
+
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(FROM_EMAIL, EMAIL_PASSWORD)
         smtp.send_message(msg)
@@ -109,20 +146,18 @@ def submit():
     phone      = normalize_phone(request.form.get("phone", "").strip())
     satisfaction = request.form.get("satisfaction", "").strip()
     suggestion = request.form.get("suggestion", "").strip()
-    city      = request.form.get("city", "").strip()
 
     ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
     fn        = f"{name}_{ts}.xlsx"
     file_path = BACKUP_FOLDER / fn
     raw_data  = {
         "姓名": name, "生日": birthday, "性別": gender,
-        "Email": email, "電話": phone, "地區": city,
+        "Email": email, "電話": phone,
         "服務態度評價": satisfaction, "建議": suggestion,
         "提交時間": ts
     }
     save_to_excel(raw_data, file_path)
 
-    # user_data 只傳官方規範
     user_data = {
         "external_id": hash_sha256(name + phone + email)
     }
@@ -132,24 +167,24 @@ def submit():
         user_data["em"] = hash_sha256(email)
     if phone:
         user_data["ph"] = hash_sha256(phone)
-    # ln (姓) 如果你分割的話可以加, 這裡用不到就不加
 
-    # custom_data 可自訂傳遞（地區、性別、生日）
     custom_data = {
         "currency":    CURRENCY,
         "value":       random.choice(VALUE_CHOICES),
         "gender":      gender,
-        "city":        city,
-        "birthday":    birthday
+        "birthday":    birthday,
+        "satisfaction": satisfaction,
+        "suggestion":  suggestion,
+        "submit_time": ts
     }
 
     payload = {
         "data": [{
-            "event_name":      "FormSubmit",
-            "event_time":      int(datetime.now().timestamp()),
-            "action_source":   "system_generated",
-            "user_data":       user_data,
-            "custom_data":     custom_data
+            "event_name":    "Purchase",  # ← 統一事件名稱為 Purchase
+            "event_time":    int(datetime.now().timestamp()),
+            "action_source": "system_generated",
+            "user_data":     user_data,
+            "custom_data":   custom_data
         }],
         "upload_tag": f"form_{ts}"
     }
@@ -160,9 +195,10 @@ def submit():
         params={"access_token": ACCESS_TOKEN},
         headers={"Content-Type": "application/json"}
     )
-    print("Meta Dataset 上傳結果：", resp.status_code, resp.text)
+    print("Meta Dataset 回應：", resp.status_code, resp.text)
 
     send_email_with_attachment(file_path, raw_data)
+
     return "感謝您提供寶貴建議"
 
 if __name__ == "__main__":
