@@ -4,6 +4,7 @@ import random
 import hashlib
 import requests
 import smtplib
+import pickle
 from email.message import EmailMessage
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
 TO_EMAIL_1     = os.environ["TO_EMAIL_1"]
 TO_EMAIL_2     = os.environ["TO_EMAIL_2"]
 
+PROFILE_MAP_PATH = "user_profile_map.pkl"
 BACKUP_FOLDER = Path("form_backups")
 BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
 
@@ -117,7 +119,6 @@ HTML_FORM = '''
             <textarea name="satisfaction" rows="3" cols="40"></textarea><br>
             您對我們的服務有什麼建議？<br>
             <textarea name="suggestion" rows="3" cols="40"></textarea><br>
-            <!-- 隱藏 event_id 欄位 -->
             <input type="hidden" name="event_id" id="event_id" value="">
             <button type="submit">送出</button>
         </form>
@@ -130,7 +131,7 @@ HTML_FORM = '''
         var eid = generateEventID();
         document.getElementById('event_id').value = eid;
         fbq('track', 'Purchase', {}, {eventID: eid});
-        return true; // 讓表單繼續送出
+        return true;
     }
     </script>
 </body>
@@ -164,7 +165,6 @@ def send_email_with_attachment(file_path: Path, raw_data: dict):
     msg["From"]    = FROM_EMAIL
     msg["To"]      = [TO_EMAIL_1, TO_EMAIL_2]
     msg.set_content("客戶填寫內容如下：\n\n" + build_email_content(raw_data))
-
     with open(file_path, "rb") as f:
         msg.add_attachment(
             f.read(),
@@ -172,7 +172,6 @@ def send_email_with_attachment(file_path: Path, raw_data: dict):
             subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=file_path.name
         )
-
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(FROM_EMAIL, EMAIL_PASSWORD)
         smtp.send_message(msg)
@@ -186,7 +185,7 @@ def submit():
     phone        = normalize_phone(request.form.get("phone", "").strip())
     satisfaction = request.form.get("satisfaction", "").strip()
     suggestion   = request.form.get("suggestion", "").strip()
-    event_id     = request.form.get("event_id", "")  # 前端傳來
+    event_id     = request.form.get("event_id", "")
 
     ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
     fn        = f"{name}_{ts}.xlsx"
@@ -223,7 +222,7 @@ def submit():
         "data": [{
             "event_name":    "Purchase",
             "event_time":    int(datetime.now().timestamp()),
-            "event_id":      event_id,  # 帶同一個 event_id
+            "event_id":      event_id,
             "action_source": "system_generated",
             "user_data":     user_data,
             "custom_data":   custom_data
@@ -240,6 +239,31 @@ def submit():
     print("Meta Dataset 回應：", resp.status_code, resp.text)
 
     send_email_with_attachment(file_path, raw_data)
+
+    # === 補強 user_profile_map.pkl，有填就覆蓋，沒填就保留舊值 ===
+    user_key = email or phone or name
+    if os.path.exists(PROFILE_MAP_PATH):
+        with open(PROFILE_MAP_PATH, "rb") as f:
+            user_profile_map = pickle.load(f)
+    else:
+        user_profile_map = {}
+    new_profile = {
+        "fn": name[:1] if name else "",
+        "ln": name[1:] if name and len(name) > 1 else "",
+        "em": email,
+        "ph": phone,
+        "db": birthday,
+        "ge": "f" if gender == "female" else "m",
+        "external_id": email or phone or name
+    }
+    profile = user_profile_map.get(user_key, {})
+    for k, v in new_profile.items():
+        if v:  # 有資料就覆蓋，沒填就保留
+            profile[k] = v
+    user_profile_map[user_key] = profile
+    with open(PROFILE_MAP_PATH, "wb") as f:
+        pickle.dump(user_profile_map, f)
+    # === end 補強 ===
 
     return "感謝您提供寶貴建議"
 
