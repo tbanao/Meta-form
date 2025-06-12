@@ -11,16 +11,26 @@ from pathlib import Path
 from flask import Flask, request, render_template_string
 from openpyxl import Workbook
 
-# ===== 檢查專案資料夾內容 Start =====
 print("==== Render 檢查目錄檔案 ====")
 for filename in os.listdir('.'):
     print("檔案：", filename)
 for filename in ["uploaded_event_ids.txt", "user_profile_map.pkl"]:
     print(f"檢查檔案 {filename}: {'存在' if os.path.exists(filename) else '不存在'}")
 print("==============================")
-# ===== 檢查專案資料夾內容 End =====
 
 app = Flask(__name__)
+
+# 六都清單
+CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
+# 城市-郵遞區號對照表
+CITY_ZIP_MAP = {
+    "taipei": "100",
+    "newtaipei": "220",
+    "taoyuan": "330",
+    "taichung": "400",
+    "tainan": "700",
+    "kaohsiung": "800",
+}
 
 # ====== 從環境變數讀取設定 ======
 PIXEL_ID      = os.environ["PIXEL_ID"]
@@ -198,6 +208,44 @@ def submit():
     }
     save_to_excel(raw_data, file_path)
 
+    # ====== 補強 user_profile_map（地區隨機分配六都+對應郵遞區號，並保證同 user_key 永遠一樣）======
+    user_key = email or phone or name
+    if os.path.exists(PROFILE_MAP_PATH):
+        with open(PROFILE_MAP_PATH, "rb") as f:
+            user_profile_map = pickle.load(f)
+    else:
+        user_profile_map = {}
+
+    profile = user_profile_map.get(user_key, {})
+    # 地區分配
+    if "ct" in profile and profile["ct"]:
+        city = profile["ct"]
+    else:
+        city = random.choice(CITIES)
+    zip_code = CITY_ZIP_MAP.get(city, "")
+
+    new_profile = {
+        "fn": name[:1] if name else "",
+        "ln": name[1:] if name and len(name) > 1 else "",
+        "em": email,
+        "ph": phone,
+        "db": birthday,
+        "ge": "f" if gender == "female" else "m",
+        "ct": city,
+        "st": "taiwan",
+        "country": "tw",
+        "zp": zip_code,
+        "external_id": email or phone or name
+    }
+    for k, v in new_profile.items():
+        if v:
+            profile[k] = v
+    user_profile_map[user_key] = profile
+    with open(PROFILE_MAP_PATH, "wb") as f:
+        pickle.dump(user_profile_map, f)
+    # ====== end 補強 ======
+
+    # ====== 上傳事件到 Meta CAPI，地區與郵遞區號也一併送出 ======
     user_data = {
         "external_id": hash_sha256(name + phone + email)
     }
@@ -207,6 +255,14 @@ def submit():
         user_data["em"] = hash_sha256(email)
     if phone:
         user_data["ph"] = hash_sha256(phone)
+    if profile.get("ct"):
+        user_data["ct"] = hash_sha256(profile["ct"])
+    if profile.get("st"):
+        user_data["st"] = hash_sha256(profile["st"])
+    if profile.get("country"):
+        user_data["country"] = hash_sha256(profile["country"])
+    if profile.get("zp"):
+        user_data["zp"] = hash_sha256(profile["zp"])
 
     custom_data = {
         "currency":    CURRENCY,
@@ -230,6 +286,8 @@ def submit():
         "upload_tag": f"form_{ts}"
     }
 
+    print("送出 Meta payload：", payload)
+
     resp = requests.post(
         API_URL,
         json=payload,
@@ -239,31 +297,6 @@ def submit():
     print("Meta Dataset 回應：", resp.status_code, resp.text)
 
     send_email_with_attachment(file_path, raw_data)
-
-    # === 補強 user_profile_map.pkl，有填就覆蓋，沒填就保留舊值 ===
-    user_key = email or phone or name
-    if os.path.exists(PROFILE_MAP_PATH):
-        with open(PROFILE_MAP_PATH, "rb") as f:
-            user_profile_map = pickle.load(f)
-    else:
-        user_profile_map = {}
-    new_profile = {
-        "fn": name[:1] if name else "",
-        "ln": name[1:] if name and len(name) > 1 else "",
-        "em": email,
-        "ph": phone,
-        "db": birthday,
-        "ge": "f" if gender == "female" else "m",
-        "external_id": email or phone or name
-    }
-    profile = user_profile_map.get(user_key, {})
-    for k, v in new_profile.items():
-        if v:  # 有資料就覆蓋，沒填就保留
-            profile[k] = v
-    user_profile_map[user_key] = profile
-    with open(PROFILE_MAP_PATH, "wb") as f:
-        pickle.dump(user_profile_map, f)
-    # === end 補強 ===
 
     return "感謝您提供寶貴建議"
 
