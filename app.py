@@ -1,38 +1,40 @@
 import os
 import re
+import json
 import random
 import hashlib
 import requests
 import smtplib
 import pickle
+import fcntl
+from contextlib import contextmanager
 from email.message import EmailMessage
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, request, render_template_string
 from openpyxl import Workbook
 
+# ====== 目錄檢查（部署時可保留觀察） ======
 print("==== Render 檢查目錄檔案 ====")
 for filename in os.listdir('.'):
     print("檔案：", filename)
-for filename in ["uploaded_event_ids.txt", "user_profile_map.pkl"]:
-    print(f"檢查檔案 {filename}: {'存在' if os.path.exists(filename) else '不存在'}")
-print("==============================")
+for fn in ["uploaded_event_ids.txt", "user_profile_map.pkl"]:
+    print(f"檢查 {fn}: {'存在' if os.path.exists(fn) else '不存在'}")
+print("============================\n")
 
 app = Flask(__name__)
 
-# 六都清單
+# ---------- 地區設定 ----------
 CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
-# 城市-郵遞區號對照表
 CITY_ZIP_MAP = {
     "taipei": "100",
     "newtaipei": "220",
     "taoyuan": "330",
     "taichung": "400",
     "tainan": "700",
-    "kaohsiung": "800",
+    "kaohsiung": "800"
 }
-
-# ====== 從環境變數讀取設定 ======
+# ---------- 環境變數 ----------
 PIXEL_ID      = os.environ["PIXEL_ID"]
 ACCESS_TOKEN  = os.environ["ACCESS_TOKEN"]
 API_URL       = f"https://graph.facebook.com/v14.0/{PIXEL_ID}/events"
@@ -48,110 +50,63 @@ PROFILE_MAP_PATH = "user_profile_map.pkl"
 BACKUP_FOLDER = Path("form_backups")
 BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
 
+# ---------- File-lock 工具 ----------
+@contextmanager
+def locked_file(path: str, mode: str):
+    with open(path, mode) as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield f
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+# ---------- 前端 HTML ----------
 HTML_FORM = '''
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <title>服務滿意度調查</title>
-    <style>
-        body {
-            background: #f2f6fb;
-            font-family: "微軟正黑體", Arial, sans-serif;
-        }
-        .form-container {
-            background: rgba(255,255,255,0.93);
-            max-width: 400px;
-            margin: 60px auto 0 auto;
-            padding: 36px 32px 28px 32px;
-            border-radius: 16px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.10);
-            text-align: center;
-        }
-        input, select, textarea, button {
-            width: 90%;
-            padding: 6px 10px;
-            margin: 6px 0 12px 0;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            font-size: 16px;
-            background: #fafbfc;
-        }
-        button {
-            background: #568cf5;
-            color: #fff;
-            border: none;
-            font-weight: bold;
-            padding: 10px 0;
-            transition: background 0.3s;
-        }
-        button:hover {
-            background: #376ad8;
-        }
-        h2 {
-            margin-top: 0;
-            color: #34495e;
-        }
-    </style>
-    <!-- Meta Pixel Code -->
-    <script>
-    !function(f,b,e,v,n,t,s)
-    {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
-    n.callMethod.apply(n,arguments):n.queue.push(arguments)};
-    if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
-    n.queue=[];t=b.createElement(e);t.async=!0;
-    t.src=v;s=b.getElementsByTagName(e)[0];
-    s.parentNode.insertBefore(t,s)}(window, document,'script',
-    'https://connect.facebook.net/en_US/fbevents.js');
-    fbq('init', '1664521517602334');
-    fbq('track', 'PageView');
-    </script>
-    <noscript>
-        <img height="1" width="1" style="display:none"
-             src="https://www.facebook.com/tr?id=1664521517602334&ev=PageView&noscript=1"/>
-    </noscript>
-    <!-- End Meta Pixel Code -->
-</head>
-<body>
-    <div class="form-container">
-        <h2>服務滿意度調查</h2>
-        <form id="feedbackForm" action="/submit" method="post" onsubmit="return beforeSubmit();">
-            姓名：<input type="text" name="name" required><br>
-            出生年月日：<input type="date" name="birthday"><br>
-            性別：
-            <select name="gender">
-                <option value="female">女性</option>
-                <option value="male">男性</option>
-            </select><br>
-            Email：<input type="email" name="email"><br>
-            電話：<input type="text" name="phone"><br>
-            您覺得我們小編的服務態度如何？解說是否清楚易懂？<br>
-            <textarea name="satisfaction" rows="3" cols="40"></textarea><br>
-            您對我們的服務有什麼建議？<br>
-            <textarea name="suggestion" rows="3" cols="40"></textarea><br>
-            <input type="hidden" name="event_id" id="event_id" value="">
-            <button type="submit">送出</button>
-        </form>
-    </div>
-    <script>
-    function generateEventID() {
-        return 'evt_' + Date.now() + '_' + Math.floor(Math.random()*100000);
-    }
-    function beforeSubmit() {
-        var eid = generateEventID();
-        document.getElementById('event_id').value = eid;
-        fbq('track', 'Purchase', {}, {eventID: eid});
-        return true;
-    }
-    </script>
-</body>
-</html>
+<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
+<title>服務滿意度調查</title>
+<style>
+body{background:#f2f6fb;font-family:"微軟正黑體",Arial,sans-serif}
+.form-container{background:rgba(255,255,255,0.93);max-width:400px;margin:60px auto;padding:36px 32px;border-radius:16px;
+box-shadow:0 4px 16px rgba(0,0,0,0.10);text-align:center}
+input,select,textarea,button{width:90%;padding:6px 10px;margin:6px 0 12px;border:1px solid #ccc;border-radius:4px;font-size:16px;background:#fafbfc}
+button{background:#568cf5;color:#fff;border:none;font-weight:bold;padding:10px 0;transition:background .3s}
+button:hover{background:#376ad8}
+h2{margin-top:0;color:#34495e}
+</style>
+<script>
+!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}
+(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
+fbq('init','1664521517602334');fbq('track','PageView');
+function genID(){return 'evt_'+Date.now()+'_'+Math.floor(Math.random()*1e5)}
+function beforeSubmit(){var id=genID();document.getElementById('eid').value=id;
+fbq('track','Purchase',{}, {eventID:id});return true;}
+</script></head><body>
+<div class="form-container">
+<h2>服務滿意度調查</h2>
+<form action="/submit" method="post" onsubmit="return beforeSubmit();">
+姓名：<input type="text" name="name" required><br>
+出生年月日：<input type="date" name="birthday"><br>
+性別：<select name="gender"><option value="female">女性</option><option value="male">男性</option></select><br>
+Email：<input type="email" name="email"><br>
+電話：<input type="text" name="phone"><br>
+城市：
+<select name="city">
+  <option value="">--請選擇--</option>
+  <option value="taipei">台北</option><option value="newtaipei">新北</option>
+  <option value="taoyuan">桃園</option><option value="taichung">台中</option>
+  <option value="tainan">台南</option><option value="kaohsiung">高雄</option>
+</select><br>
+您覺得我們小編的服務態度如何？<br>
+<textarea name="satisfaction" rows="3" cols="40"></textarea><br>
+您對我們的服務有什麼建議？<br>
+<textarea name="suggestion" rows="3" cols="40"></textarea><br>
+<input type="hidden" id="eid" name="front_event_id" value="">
+<button type="submit">送出</button>
+</form></div></body></html>
 '''
 
-@app.route('/')
-def index():
-    return render_template_string(HTML_FORM)
-
+# ---------- 工具函式 ----------
 def hash_sha256(text: str) -> str:
     return hashlib.sha256(text.encode('utf-8')).hexdigest() if text else ""
 
@@ -160,146 +115,122 @@ def normalize_phone(phone: str) -> str:
     return "886" + cleaned.lstrip("0") if cleaned.startswith("09") else cleaned
 
 def save_to_excel(data: dict, file_path: Path):
-    wb = Workbook()
-    ws = wb.active
-    ws.append(list(data.keys()))
-    ws.append(list(data.values()))
-    wb.save(file_path)
+    wb = Workbook(); ws = wb.active
+    ws.append(list(data.keys())); ws.append(list(data.values())); wb.save(file_path)
 
-def build_email_content(data: dict) -> str:
-    return "\n".join(f"{k}: {v}" for k, v in data.items())
+def build_email_content(d: dict) -> str:
+    return "\n".join(f"{k}: {v}" for k, v in d.items())
 
-def send_email_with_attachment(file_path: Path, raw_data: dict):
+def send_email_with_attachment(file_path: Path, raw: dict):
     msg = EmailMessage()
-    msg["Subject"] = "新客戶表單回報"
-    msg["From"]    = FROM_EMAIL
-    msg["To"]      = [TO_EMAIL_1, TO_EMAIL_2]
-    msg.set_content("客戶填寫內容如下：\n\n" + build_email_content(raw_data))
+    msg["Subject"] = "新客戶表單回報"; msg["From"] = FROM_EMAIL; msg["To"] = [TO_EMAIL_1, TO_EMAIL_2]
+    msg.set_content("客戶填寫內容如下：\n\n"+build_email_content(raw))
     with open(file_path, "rb") as f:
-        msg.add_attachment(
-            f.read(),
-            maintype="application",
-            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=file_path.name
-        )
+        msg.add_attachment(f.read(), maintype="application",
+                           subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           filename=file_path.name)
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(FROM_EMAIL, EMAIL_PASSWORD)
-        smtp.send_message(msg)
+        smtp.login(FROM_EMAIL, EMAIL_PASSWORD); smtp.send_message(msg)
+
+# ---------- 路由 ----------
+@app.route('/')
+def index(): return render_template_string(HTML_FORM)
+
 
 @app.route('/submit', methods=['POST'])
 def submit():
-    name         = request.form.get("name", "").strip()
-    birthday     = request.form.get("birthday", "").strip()
-    gender       = request.form.get("gender", "female")
-    email        = request.form.get("email", "").strip().lower()
-    phone        = normalize_phone(request.form.get("phone", "").strip())
-    satisfaction = request.form.get("satisfaction", "").strip()
-    suggestion   = request.form.get("suggestion", "").strip()
-    event_id     = request.form.get("event_id", "")
+    # ------ 取得表單資料 ------
+    name   = request.form.get("name", "").strip()
+    birthday = request.form.get("birthday", "").strip()
+    gender = request.form.get("gender", "female")
+    email  = request.form.get("email", "").strip().lower()
+    phone  = normalize_phone(request.form.get("phone","").strip())
+    city   = request.form.get("city", "").strip()
+    satisfaction = request.form.get("satisfaction","").strip()
+    suggestion   = request.form.get("suggestion","").strip()
 
-    ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fn        = f"{name}_{ts}.xlsx"
-    file_path = BACKUP_FOLDER / fn
-    raw_data  = {
-        "姓名": name, "生日": birthday, "性別": gender,
-        "Email": email, "電話": phone,
-        "服務態度評價": satisfaction, "建議": suggestion,
-        "提交時間": ts
-    }
+    # ------ 建立 Excel 備份 ------
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_path = BACKUP_FOLDER / f"{name}_{ts}.xlsx"
+    raw_data = {"姓名":name,"生日":birthday,"性別":gender,"Email":email,"電話":phone,
+                "城市":city,"服務態度評價":satisfaction,"建議":suggestion,"提交時間":ts}
     save_to_excel(raw_data, file_path)
 
-    # ====== 補強 user_profile_map（地區隨機分配六都+對應郵遞區號，並保證同 user_key 永遠一樣）======
+    # ------ 讀取並更新 user_profile_map ------
+    if not os.path.exists(PROFILE_MAP_PATH):
+        with open(PROFILE_MAP_PATH,"wb") as f: pickle.dump({}, f)
+
     user_key = email or phone or name
-    if os.path.exists(PROFILE_MAP_PATH):
-        with open(PROFILE_MAP_PATH, "rb") as f:
-            user_profile_map = pickle.load(f)
-    else:
-        user_profile_map = {}
+    with locked_file(PROFILE_MAP_PATH,"rb") as f:
+        user_profile_map = pickle.load(f)
 
     profile = user_profile_map.get(user_key, {})
-    # 地區分配
-    if "ct" in profile and profile["ct"]:
+    if not city and profile.get("ct"):  # 已有舊值
         city = profile["ct"]
-    else:
-        city = random.choice(CITIES)
     zip_code = CITY_ZIP_MAP.get(city, "")
 
+    # 拆姓名
+    fn, ln = (name[:1], name[1:]) if re.match(r"^[\u4e00-\u9fa5]{2,4}$",name) else (name.split()[0], " ".join(name.split()[1:]))
+
     new_profile = {
-        "fn": name[:1] if name else "",
-        "ln": name[1:] if name and len(name) > 1 else "",
-        "em": email,
-        "ph": phone,
-        "db": birthday,
-        "ge": "f" if gender == "female" else "m",
-        "ct": city,
-        "st": "taiwan",
-        "country": "tw",
-        "zp": zip_code,
+        "fn":fn, "ln":ln, "em":email, "ph":phone,
+        "db":birthday, "ge":"f" if gender=="female" else "m",
+        "ct":city, "st":"taiwan" if city else "",
+        "country":"tw" if city else "", "zp":zip_code,
         "external_id": email or phone or name
     }
-    for k, v in new_profile.items():
-        if v:
-            profile[k] = v
-    user_profile_map[user_key] = profile
-    with open(PROFILE_MAP_PATH, "wb") as f:
+    for k,v in new_profile.items():
+        if v: profile[k]=v
+    user_profile_map[user_key]=profile
+    with locked_file(PROFILE_MAP_PATH,"wb") as f:
         pickle.dump(user_profile_map, f)
-    # ====== end 補強 ======
 
-    # ====== 上傳事件到 Meta CAPI，地區與郵遞區號也一併送出 ======
-    user_data = {
-        "external_id": hash_sha256(name + phone + email)
-    }
-    if name:
-        user_data["fn"] = hash_sha256(name)
-    if email:
-        user_data["em"] = hash_sha256(email)
-    if phone:
-        user_data["ph"] = hash_sha256(phone)
-    if profile.get("ct"):
-        user_data["ct"] = hash_sha256(profile["ct"])
-    if profile.get("st"):
-        user_data["st"] = hash_sha256(profile["st"])
-    if profile.get("country"):
-        user_data["country"] = hash_sha256(profile["country"])
-    if profile.get("zp"):
-        user_data["zp"] = hash_sha256(profile["zp"])
+    # ------ 準備 user_data ------
+    user_data = {}
+    # external_id：優先 email，其次 phone，再次姓名雜湊
+    ext_source = email or phone or name
+    user_data["external_id"] = hash_sha256(ext_source)
 
-    custom_data = {
-        "currency":    CURRENCY,
-        "value":       random.choice(VALUE_CHOICES),
-        "gender":      gender,
-        "birthday":    birthday,
-        "satisfaction": satisfaction,
-        "suggestion":  suggestion,
-        "submit_time": ts
-    }
+    if fn:   user_data["fn"]  = hash_sha256(fn)
+    if ln:   user_data["ln"]  = hash_sha256(ln)
+    if email: user_data["em"] = hash_sha256(email)
+    if phone: user_data["ph"] = hash_sha256(phone)
+    for fld in ("ct","st","country","zp"):
+        if profile.get(fld): user_data[fld] = hash_sha256(profile[fld])
+
+    # ------ custom_data ------
+    custom_data = {"currency":CURRENCY,"value":random.choice(VALUE_CHOICES),
+                   "gender":gender,"birthday":birthday,
+                   "satisfaction":satisfaction,"suggestion":suggestion,
+                   "submit_time":ts}
+
+    # ------ 重新產生後端 event_id ------
+    event_id = f"evt_{int(time.time()*1000)}_{random.randint(1000,9999)}"
 
     payload = {
-        "data": [{
-            "event_name":    "Purchase",
-            "event_time":    int(datetime.now().timestamp()),
-            "event_id":      event_id,
-            "action_source": "system_generated",
-            "user_data":     user_data,
-            "custom_data":   custom_data
+        "data":[{
+            "event_name":"Purchase",
+            "event_time":int(datetime.now().timestamp()),
+            "event_id":event_id,
+            "action_source":"system_generated",
+            "user_data":user_data,
+            "custom_data":custom_data
         }],
-        "upload_tag": f"form_{ts}"
+        "upload_tag":f"form_{ts}"
     }
 
-    print("送出 Meta payload：", payload)
-
-    resp = requests.post(
-        API_URL,
-        json=payload,
-        params={"access_token": ACCESS_TOKEN},
-        headers={"Content-Type": "application/json"}
-    )
+    print("送出 Meta payload：", json.dumps(payload,ensure_ascii=False))
+    resp = requests.post(API_URL, json=payload,
+                         params={"access_token":ACCESS_TOKEN},
+                         headers={"Content-Type":"application/json"})
     print("Meta Dataset 回應：", resp.status_code, resp.text)
 
+    # ------ 寄信通知 ------
     send_email_with_attachment(file_path, raw_data)
 
-    return "感謝您提供寶貴建議"
+    return "感謝您提供寶貴建議！"
 
+# ---------- 主程序 ----------
 if __name__ == "__main__":
     for var in ["PIXEL_ID","ACCESS_TOKEN","FROM_EMAIL","EMAIL_PASSWORD","TO_EMAIL_1","TO_EMAIL_2"]:
         if var not in os.environ:
