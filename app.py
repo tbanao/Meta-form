@@ -1,4 +1,4 @@
-# app.py  (2025-06-12 －Email 內容完整顯示＋附 Excel)
+# app.py  (2025-06-12 －Email 文字完整＋CAPI 回傳恢復)
 import os, re, json, random, time, hashlib, requests, smtplib, pickle, fcntl, logging
 from contextlib import contextmanager
 from email.message import EmailMessage
@@ -8,13 +8,12 @@ from flask import Flask, request, render_template_string, redirect, session, mak
 from openpyxl import Workbook
 
 # ─── 必填 ENV ──────────────────────────────────────
-for v in ["PIXEL_ID", "ACCESS_TOKEN",
-          "FROM_EMAIL", "EMAIL_PASSWORD", "TO_EMAIL_1", "TO_EMAIL_2",
-          "SECRET_KEY"]:
+for v in ["PIXEL_ID","ACCESS_TOKEN",
+          "FROM_EMAIL","EMAIL_PASSWORD","TO_EMAIL_1","TO_EMAIL_2","SECRET_KEY"]:
     assert v in os.environ, f"缺少環境變數 {v}"
 
 PIXEL_ID, ACCESS_TOKEN = os.environ["PIXEL_ID"], os.environ["ACCESS_TOKEN"]
-CURRENCY, VALUE_CHOICES = "TWD", [19800, 28000, 28800, 34800, 39800, 45800]
+CURRENCY, VALUE_CHOICES = "TWD", [19800,28000,28800,34800,39800,45800]
 
 # ─── Logging ──────────────────────────────────────
 logging.basicConfig(level=logging.INFO,
@@ -27,7 +26,7 @@ app.secret_key = os.environ["SECRET_KEY"]
 HSTS_HEADER = "max-age=63072000; includeSubDomains; preload"
 API_URL     = f"https://graph.facebook.com/v19.0/{PIXEL_ID}/events"
 
-# ─── 路徑 ──────────────────────────────────────────
+# ─── 檔案路徑 ──────────────────────────────────────
 PROFILE_MAP = "user_profile_map.pkl"
 BACKUP_DIR  = Path("form_backups"); BACKUP_DIR.mkdir(exist_ok=True)
 RETRY_FILE  = "retry_queue.jsonl"; Path(RETRY_FILE).touch(exist_ok=True)
@@ -38,19 +37,17 @@ def locked(path, mode):
     with open(path, mode) as f:
         fcntl.flock(f, fcntl.LOCK_EX); yield f; fcntl.flock(f, fcntl.LOCK_UN)
 
-mask  = lambda s,k=2: s[:k]+"*"*(max(0,len(s)-k-2))+s[-2:] if s else ""
+mask  = lambda s,k=2: s[:k] + "*"*(max(0,len(s)-k-2)) + s[-2:] if s else ""
 sha   = lambda t: hashlib.sha256(t.encode()).hexdigest() if t else ""
-norm_phone = lambda p: ("886"+re.sub(r"[^\d]","",p).lstrip("0")) \
-                       if p.startswith("09") else re.sub(r"[^\d]","",p)
+norm_phone = lambda p: ("886"+re.sub(r"[^\d]","",p).lstrip("0")) if p.startswith("09") else re.sub(r"[^\d]","",p)
 
-def csrf_token():
+def csrf():
     if "csrf" not in session:
         session["csrf"] = hashlib.md5(os.urandom(16)).hexdigest()
     return session["csrf"]
 
-# ─── 前端 HTML（含 _fbc/_fbp 自動補齊）────────────
-HTML = f'''
-<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
+# ─── 前端 HTML（含 _fbc/_fbp 補齊）───────────────
+HTML = f'''<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
 <title>服務滿意度調查</title>
 <style>
 body{{background:#f2f6fb;font-family:"微軟正黑體",Arial,sans-serif}}
@@ -69,12 +66,11 @@ t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}}(window,d
 'https://connect.facebook.net/en_US/fbevents.js');
 fbq('init','{PIXEL_ID}');fbq('track','PageView');
 
-/* cookie 補齊 */
 function getC(n){{return (document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)')||[])[2]||'';}}
 function setC(n,v){{document.cookie=n+'='+v+';path=/;SameSite=Lax';}}
 (function(){{if(!getC('_fbp'))setC('_fbp','fb.1.'+Date.now()/1000+'.'+Math.floor(Math.random()*1e16));
-const fbclid=new URLSearchParams(location.search).get('fbclid');
-if(fbclid&&!getC('_fbc'))setC('_fbc','fb.1.'+Date.now()/1000+'.'+fbclid);}})();
+const c=new URLSearchParams(location.search).get('fbclid');
+if(c&&!getC('_fbc'))setC('_fbc','fb.1.'+Date.now()/1000+'.'+c);}})();
 
 const PRICES={VALUE_CHOICES};
 function genID(){{return 'evt_'+Date.now()+'_'+Math.random().toString(36).slice(2);}}
@@ -108,8 +104,7 @@ function beforeSubmit(e){{
   <input type="hidden" id="fbc"   name="fbc">
   <input type="hidden" id="fbp"   name="fbp">
   <button type="submit">送出</button>
-</form></div></body></html>
-'''
+</form></div></body></html>'''
 
 # ─── HTTPS/HSTS ───────────────────────────────────
 @app.before_request
@@ -126,42 +121,76 @@ def add_hsts(resp):
 def healthz(): return "OK",200
 
 @app.route('/')
-def index(): return render_template_string(HTML, csrf=csrf_token())
+def index(): return render_template_string(HTML, csrf=csrf())
 
 # ─── Submit ──────────────────────────────────────
 @app.route('/submit', methods=['POST'])
 def submit():
     if request.form.get("csrf_token")!=session.get("csrf"): return "CSRF 錯誤",400
 
-    # 收資料
-    name   = request.form["name"].strip()
-    bday   = request.form.get("birthday","").strip()
-    gender = request.form.get("gender","female")
-    email  = request.form["email"].lower().strip()
-    phone  = norm_phone(request.form["phone"])
-    sat    = request.form.get("satisfaction","")
-    sug    = request.form.get("suggestion","")
+    name=request.form["name"].strip()
+    bday=request.form.get("birthday","").strip()
+    gender=request.form.get("gender","female")
+    email=request.form["email"].lower().strip()
+    phone=norm_phone(request.form["phone"])
+    sat=request.form.get("satisfaction","")
+    sug=request.form.get("suggestion","")
 
-    price  = int(request.form.get("price") or random.choice(VALUE_CHOICES))
-    eid    = request.form.get("event_id") or f"evt_{int(time.time()*1000)}_{random.randint(1000,9999)}"
-    fbc    = request.form.get("fbc") or request.cookies.get("_fbc","")
-    fbp    = request.form.get("fbp") or request.cookies.get("_fbp","")
+    price=int(request.form.get("price") or random.choice(VALUE_CHOICES))
+    eid=request.form.get("event_id") or f"evt_{int(time.time()*1000)}_{random.randint(1000,9999)}"
+    fbc=request.form.get("fbc") or request.cookies.get("_fbc","")
+    fbp=request.form.get("fbp") or request.cookies.get("_fbp","")
     if not fbc and (ref:=request.referrer):
         if m:=re.search(r"fbclid=([^&]+)",ref): fbc=f"fb.1.{int(time.time())}.{m.group(1)}"
 
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts=datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
     # Excel 備份
-    xls = BACKUP_DIR/f"{name}_{ts}.xlsx"
-    wb = Workbook(); ws = wb.active
+    xls=BACKUP_DIR/f"{name}_{ts}.xlsx"
+    wb=Workbook(); ws=wb.active
     ws.append(["姓名","Email","電話","生日","性別","滿意度","建議","提交時間"])
     ws.append([name,email,phone,bday,gender,sat,sug,ts]); wb.save(xls)
 
-    # CAPI（略，與上一版相同，保留去重與 user_data…）
-    # ………………
+    # --- CAPI user_data & payload ---
+    city_choices=["taipei","newtaipei","taoyuan","taichung","tainan","kaohsiung"]
+    zp_map={"taipei":"100","newtaipei":"220","taoyuan":"330",
+            "taichung":"400","tainan":"700","kaohsiung":"800"}
+    city=random.choice(city_choices)
 
-    # ── email 通知 ────────────────────────────────
-    body = "\n".join([
+    ud={"external_id":sha(email or phone or name),
+        "em":sha(email),"ph":sha(phone),
+        "fn":sha(name[:1]),"ln":sha(name[1:]),
+        "ct":sha(city),"zp":sha(zp_map[city]),
+        "client_ip_address":request.remote_addr or "",
+        "client_user_agent":request.headers.get("User-Agent",""),
+        "fbc":fbc,"fbp":fbp}
+
+    custom={"currency":CURRENCY,"value":price,
+            "submit_time":ts,"gender":gender,
+            "birthday":bday,"satisfaction":sat,"suggestion":sug}
+
+    payload={"data":[{"event_name":"Purchase","event_time":int(time.time()),
+                      "event_id":eid,"action_source":"website",
+                      "event_source_url":request.url_root.rstrip('/')+'/',
+                      "user_data":ud,"custom_data":custom}],
+             "upload_tag":f"form_{ts}"}
+
+    # --- 發送 CAPI ---
+    logging.info("▶ 送出 CAPI eid=%s email=%s", eid, mask(email))
+    try:
+        resp=requests.post(API_URL, json=payload,
+                           params={"access_token":ACCESS_TOKEN}, timeout=10)
+    except Exception:
+        logging.exception("❌ CAPI request error")
+        resp=type("obj",(),{"ok":False,"status_code":0,"text":""})()
+
+    logging.info("CAPI ➜ status=%s body=%s", resp.status_code, resp.text)
+    if not resp.ok:
+        with open(RETRY_FILE,"a",encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False)+"\n")
+
+    # Email 通知
+    body="\n".join([
         f"姓名: {name}",
         f"Email: {email}",
         f"電話: {phone}",
@@ -171,16 +200,15 @@ def submit():
         "建議內容:",
         sug or "-"
     ])
-    msg = EmailMessage()
-    msg["Subject"] = "新客戶表單回報"
-    msg["From"]    = os.environ["FROM_EMAIL"]
-    msg["To"]      = ",".join([os.environ["TO_EMAIL_1"], os.environ["TO_EMAIL_2"]])
+    msg=EmailMessage()
+    msg["Subject"]="新客戶表單回報"
+    msg["From"]=os.environ["FROM_EMAIL"]
+    msg["To"]=",".join([os.environ["TO_EMAIL_1"], os.environ["TO_EMAIL_2"]])
     msg.set_content(body, charset="utf-8")
     with open(xls,"rb") as f:
-        msg.add_attachment(f.read(),
-            maintype="application",
-            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=xls.name)
+        msg.add_attachment(f.read(), maintype="application",
+                           subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           filename=xls.name)
     with smtplib.SMTP_SSL("smtp.gmail.com",465) as s:
         s.login(os.environ["FROM_EMAIL"], os.environ["EMAIL_PASSWORD"])
         s.send_message(msg)
