@@ -1,5 +1,5 @@
-# app.py  ── 完整可部署 (2025-06-12 修正版)
-import os, re, json, random, time, hashlib, requests, smtplib, pickle, fcntl, traceback
+# app.py  (2025-06-12  最終版：固定 SECRET_KEY + 印出 CAPI 回傳)
+import os, re, json, random, time, hashlib, requests, smtplib, pickle, fcntl, logging
 from contextlib import contextmanager
 from email.message import EmailMessage
 from datetime import datetime
@@ -7,20 +7,29 @@ from pathlib import Path
 from flask import Flask, request, render_template_string, redirect, session
 from openpyxl import Workbook
 
-# ─── 基本設定 ───────────────────────────────────────
+# ─── 必填 ENV ──────────────────────────────────────
+for v in ["PIXEL_ID","ACCESS_TOKEN",
+          "FROM_EMAIL","EMAIL_PASSWORD","TO_EMAIL_1","TO_EMAIL_2",
+          "SECRET_KEY"]:
+    assert v in os.environ, f"缺少環境變數 {v}"
+
+# ─── Logging 設定：INFO 以上會寫到 Render log────────
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s: %(message)s",
+                    datefmt="%H:%M:%S")
+
+# ─── Flask & Security ─────────────────────────────
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
+app.secret_key = os.environ["SECRET_KEY"]              # 固定，避免多 worker CSRF 失效
 HSTS_HEADER = "max-age=63072000; includeSubDomains; preload"
 
-PIXEL_ID      = os.environ["PIXEL_ID"]
-ACCESS_TOKEN  = os.environ["ACCESS_TOKEN"]
-API_URL       = f"https://graph.facebook.com/v14.0/{PIXEL_ID}/events"
-CURRENCY      = "TWD"
-VALUE_CHOICES = [19800, 28000, 28800, 34800, 39800, 45800]
+# ─── CAPI / Email / 路徑設定 ──────────────────────
+PIXEL_ID, ACCESS_TOKEN = os.environ["PIXEL_ID"], os.environ["ACCESS_TOKEN"]
+API_URL = f"https://graph.facebook.com/v14.0/{PIXEL_ID}/events"
+CURRENCY, VALUE_CHOICES = "TWD", [19800,28000,28800,34800,39800,45800]
 
-FROM_EMAIL     = os.environ["FROM_EMAIL"]
-EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
-TO_EMAILS      = [os.environ["TO_EMAIL_1"], os.environ["TO_EMAIL_2"]]
+FROM_EMAIL, EMAIL_PASSWORD = os.environ["FROM_EMAIL"], os.environ["EMAIL_PASSWORD"]
+TO_EMAILS = [os.environ["TO_EMAIL_1"], os.environ["TO_EMAIL_2"]]
 
 CITIES = ["taipei","newtaipei","taoyuan","taichung","tainan","kaohsiung"]
 CITY_ZIP_MAP = {"taipei":"100","newtaipei":"220","taoyuan":"330",
@@ -30,7 +39,7 @@ PROFILE_MAP_PATH = "user_profile_map.pkl"
 BACKUP_FOLDER = Path("form_backups"); BACKUP_FOLDER.mkdir(exist_ok=True)
 RETRY_FILE = "retry_queue.jsonl"; Path(RETRY_FILE).touch(exist_ok=True)
 
-# ─── 共用工具 ───────────────────────────────────────
+# ─── 共用工具 ──────────────────────────────────────
 @contextmanager
 def locked(path, mode):
     with open(path, mode) as f:
@@ -45,16 +54,15 @@ def csrf_token():
         session["csrf"] = hashlib.md5(os.urandom(16)).hexdigest()
     return session["csrf"]
 
-def save_excel(data: dict, path: Path):
+def save_excel(data:dict, path:Path):
     wb = Workbook(); ws = wb.active
-    ws.append(list(data.keys()))    # ← 修正處：轉成 list
-    ws.append(list(data.values()))
+    ws.append(list(data.keys())); ws.append(list(data.values()))
     wb.save(path)
 
-def send_mail(path: Path, data: dict):
+def send_mail(path:Path, data:dict):
     msg = EmailMessage()
     msg["Subject"], msg["From"], msg["To"] = "新客戶表單回報", FROM_EMAIL, TO_EMAILS
-    msg.set_content("\n".join(f"{k}: {v}" for k, v in data.items()))
+    msg.set_content("\n".join(f"{k}: {v}" for k,v in data.items()))
     with open(path,"rb") as f:
         msg.add_attachment(f.read(), maintype="application",
                            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -62,7 +70,7 @@ def send_mail(path: Path, data: dict):
     with smtplib.SMTP_SSL("smtp.gmail.com",465) as s:
         s.login(FROM_EMAIL, EMAIL_PASSWORD); s.send_message(msg)
 
-# ─── HTML 表單（已移除城市欄位） ─────────────────────
+# ─── HTML 表單（無城市欄位）────────────────────────
 HTML = '''
 <!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
 <title>服務滿意度調查</title>
@@ -103,7 +111,7 @@ function beforeSubmit(){
 </form></div></body></html>
 '''
 
-# ─── HTTPS / HSTS ─────────────────────────────────
+# ─── HTTPS/HSTS ───────────────────────────────────
 @app.before_request
 def force_https():
     if request.headers.get("X-Forwarded-Proto","http")!="https":
@@ -120,9 +128,9 @@ def index(): return render_template_string(HTML, csrf=csrf_token(), PIXEL=PIXEL_
 
 @app.route('/submit', methods=['POST'])
 def submit():
-    if request.form.get("csrf_token") != session.get("csrf"): return "CSRF token 錯誤",400
+    if request.form.get("csrf_token")!=session.get("csrf"): return "CSRF token 錯誤",400
 
-    # 取表單資料
+    # 收表單
     name=request.form["name"].strip()
     birthday=request.form.get("birthday","").strip()
     gender=request.form.get("gender","female")
@@ -134,8 +142,7 @@ def submit():
     ts=datetime.now().strftime("%Y%m%d_%H%M%S")
     raw={"姓名":name,"生日":birthday,"性別":gender,"Email":email,"電話":phone,
          "服務態度評價":sat,"建議":sug,"提交時間":ts}
-
-    backup=BACKUP_FOLDER/f"{name}_{ts}.xlsx"; save_excel(raw, backup)
+    excel=BACKUP_FOLDER/f"{name}_{ts}.xlsx"; save_excel(raw, excel)
 
     # profile_map
     if not Path(PROFILE_MAP_PATH).exists():
@@ -145,14 +152,13 @@ def submit():
     key=email or phone or name
     prof=profiles.get(key,{})
     fn,ln=(name[:1],name[1:]) if re.match(r"^[\u4e00-\u9fa5]{2,4}$",name)\
-        else (name.split()[0], " ".join(name.split()[1:]) if len(name.split())>1 else "")
+        else (name.split()[0]," ".join(name.split()[1:]) if len(name.split())>1 else "")
     city=prof.get("ct") or random.choice(CITIES)
     prof.update({"fn":fn,"ln":ln,"em":email,"ph":phone,"ct":city,
                  "zp":CITY_ZIP_MAP[city],"external_id":key})
     profiles[key]=prof
     with locked(PROFILE_MAP_PATH,"wb") as f: pickle.dump(profiles,f)
 
-    # event_id 去重
     event_id=request.form.get("front_event_id","").strip() or f"evt_{int(time.time()*1000)}_{random.randint(1000,9999)}"
 
     ud={"external_id":hash_sha256(key),"fn":hash_sha256(fn),"ln":hash_sha256(ln),
@@ -168,25 +174,23 @@ def submit():
                       "user_data":ud,"custom_data":custom}],
              "upload_tag":f"form_{ts}"}
 
-    print("▶ 送出:", mask(email), mask(phone))
+    logging.info("▶ 送出: %s %s", mask(email), mask(phone))
     try:
-        resp=requests.post(API_URL,json=payload,params={"access_token":ACCESS_TOKEN},timeout=10)
+        resp=requests.post(API_URL,json=payload,
+                           params={"access_token":ACCESS_TOKEN},timeout=10)
     except Exception as e:
-        print("❌ CAPI error:", e); traceback.print_exc()
-        resp=type("obj",(),{"ok":False,"status_code":0,"json":lambda self:{}})()
+        logging.exception("❌ CAPI request error")
+        resp=type("obj",(),{"ok":False,"status_code":0,"text":""})()
 
-    prof["last_capi_status"]={"code":resp.status_code,
-                              "fbtrace":resp.json().get("fbtrace_id") if resp.ok else "",
-                              "at":ts}
-    with locked(PROFILE_MAP_PATH,"wb") as f: pickle.dump(profiles,f)
+    # ★★★ 把 Meta 回傳完整寫到 Render log ★★★
+    logging.info("CAPI ➜ status=%s  body=%s", resp.status_code, resp.text)
+
     if not resp.ok:
         with open(RETRY_FILE,"a",encoding="utf-8") as f: f.write(json.dumps(payload)+"\n")
 
-    send_mail(backup, raw)
+    send_mail(excel, raw)
     return "感謝您提供寶貴建議！"
 
-# ─── Main ────────────────────────────────────────
+# ─── Main ─────────────────────────────────────────
 if __name__=="__main__":
-    for v in ["PIXEL_ID","ACCESS_TOKEN","FROM_EMAIL","EMAIL_PASSWORD","TO_EMAIL_1","TO_EMAIL_2"]:
-        assert v in os.environ, f"缺少環境變數 {v}"
     app.run(host="0.0.0.0", port=10000)
