@@ -2,6 +2,7 @@ import os
 import re
 import json
 import random
+import time            # ← 必要：用於產生 event_id
 import hashlib
 import requests
 import smtplib
@@ -14,10 +15,10 @@ from pathlib import Path
 from flask import Flask, request, render_template_string
 from openpyxl import Workbook
 
-# ====== 目錄檢查（部署時可保留觀察） ======
+# ====== 目錄檢查（佈署時可保留觀察用） ======
 print("==== Render 檢查目錄檔案 ====")
-for filename in os.listdir('.'):
-    print("檔案：", filename)
+for fn in os.listdir('.'):
+    print("檔案：", fn)
 for fn in ["uploaded_event_ids.txt", "user_profile_map.pkl"]:
     print(f"檢查 {fn}: {'存在' if os.path.exists(fn) else '不存在'}")
 print("============================\n")
@@ -27,13 +28,10 @@ app = Flask(__name__)
 # ---------- 地區設定 ----------
 CITIES = ["taipei", "newtaipei", "taoyuan", "taichung", "tainan", "kaohsiung"]
 CITY_ZIP_MAP = {
-    "taipei": "100",
-    "newtaipei": "220",
-    "taoyuan": "330",
-    "taichung": "400",
-    "tainan": "700",
-    "kaohsiung": "800"
+    "taipei": "100", "newtaipei": "220", "taoyuan": "330",
+    "taichung": "400", "tainan": "700", "kaohsiung": "800"
 }
+
 # ---------- 環境變數 ----------
 PIXEL_ID      = os.environ["PIXEL_ID"]
 ACCESS_TOKEN  = os.environ["ACCESS_TOKEN"]
@@ -107,92 +105,89 @@ Email：<input type="email" name="email"><br>
 '''
 
 # ---------- 工具函式 ----------
-def hash_sha256(text: str) -> str:
-    return hashlib.sha256(text.encode('utf-8')).hexdigest() if text else ""
+def hash_sha256(txt: str) -> str:
+    return hashlib.sha256(txt.encode('utf-8')).hexdigest() if txt else ""
 
 def normalize_phone(phone: str) -> str:
     cleaned = re.sub(r"[^\d]", "", phone)
     return "886" + cleaned.lstrip("0") if cleaned.startswith("09") else cleaned
 
-def save_to_excel(data: dict, file_path: Path):
+def save_to_excel(data: dict, fpath: Path):
     wb = Workbook(); ws = wb.active
-    ws.append(list(data.keys())); ws.append(list(data.values())); wb.save(file_path)
+    ws.append(list(data.keys())); ws.append(list(data.values())); wb.save(fpath)
 
 def build_email_content(d: dict) -> str:
     return "\n".join(f"{k}: {v}" for k, v in d.items())
 
-def send_email_with_attachment(file_path: Path, raw: dict):
+def send_email_with_attachment(fpath: Path, row: dict):
     msg = EmailMessage()
-    msg["Subject"] = "新客戶表單回報"; msg["From"] = FROM_EMAIL; msg["To"] = [TO_EMAIL_1, TO_EMAIL_2]
-    msg.set_content("客戶填寫內容如下：\n\n"+build_email_content(raw))
-    with open(file_path, "rb") as f:
+    msg["Subject"] = "新客戶表單回報"
+    msg["From"]    = FROM_EMAIL
+    msg["To"]      = [TO_EMAIL_1, TO_EMAIL_2]
+    msg.set_content("客戶填寫內容如下：\n\n"+build_email_content(row))
+    with open(fpath, "rb") as f:
         msg.add_attachment(f.read(), maintype="application",
                            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           filename=file_path.name)
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(FROM_EMAIL, EMAIL_PASSWORD); smtp.send_message(msg)
+                           filename=fpath.name)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+        s.login(FROM_EMAIL, EMAIL_PASSWORD); s.send_message(msg)
 
 # ---------- 路由 ----------
 @app.route('/')
 def index(): return render_template_string(HTML_FORM)
 
-
 @app.route('/submit', methods=['POST'])
 def submit():
     # ------ 取得表單資料 ------
-    name   = request.form.get("name", "").strip()
-    birthday = request.form.get("birthday", "").strip()
-    gender = request.form.get("gender", "female")
-    email  = request.form.get("email", "").strip().lower()
+    name   = request.form.get("name","").strip()
+    birthday = request.form.get("birthday","").strip()
+    gender = request.form.get("gender","female")
+    email  = request.form.get("email","").strip().lower()
     phone  = normalize_phone(request.form.get("phone","").strip())
-    city   = request.form.get("city", "").strip()
+    city   = request.form.get("city","").strip()
     satisfaction = request.form.get("satisfaction","").strip()
     suggestion   = request.form.get("suggestion","").strip()
 
     # ------ 建立 Excel 備份 ------
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_path = BACKUP_FOLDER / f"{name}_{ts}.xlsx"
-    raw_data = {"姓名":name,"生日":birthday,"性別":gender,"Email":email,"電話":phone,
-                "城市":city,"服務態度評價":satisfaction,"建議":suggestion,"提交時間":ts}
-    save_to_excel(raw_data, file_path)
+    fpath = BACKUP_FOLDER / f"{name}_{ts}.xlsx"
+    raw = {"姓名":name,"生日":birthday,"性別":gender,"Email":email,"電話":phone,
+           "城市":city,"服務態度評價":satisfaction,"建議":suggestion,"提交時間":ts}
+    save_to_excel(raw, fpath)
 
-    # ------ 讀取並更新 user_profile_map ------
+    # ------ 讀寫 profile_map （with lock） ------
     if not os.path.exists(PROFILE_MAP_PATH):
         with open(PROFILE_MAP_PATH,"wb") as f: pickle.dump({}, f)
 
     user_key = email or phone or name
     with locked_file(PROFILE_MAP_PATH,"rb") as f:
-        user_profile_map = pickle.load(f)
+        profile_map = pickle.load(f)
 
-    profile = user_profile_map.get(user_key, {})
-    if not city and profile.get("ct"):  # 已有舊值
-        city = profile["ct"]
-    zip_code = CITY_ZIP_MAP.get(city, "")
+    profile = profile_map.get(user_key, {})
+    if not city and profile.get("ct"): city = profile["ct"]
+    zip_code = CITY_ZIP_MAP.get(city,"")
 
     # 拆姓名
-    fn, ln = (name[:1], name[1:]) if re.match(r"^[\u4e00-\u9fa5]{2,4}$",name) else (name.split()[0], " ".join(name.split()[1:]))
+    if re.match(r"^[\u4e00-\u9fa5]{2,4}$", name):
+        fn, ln = name[:1], name[1:]
+    else:
+        parts = name.split(); fn = parts[0]; ln = " ".join(parts[1:]) if len(parts)>1 else ""
 
-    new_profile = {
-        "fn":fn, "ln":ln, "em":email, "ph":phone,
-        "db":birthday, "ge":"f" if gender=="female" else "m",
+    profile.update({
+        "fn":fn, "ln":ln, "em":email, "ph":phone, "db":birthday,
+        "ge":"f" if gender=="female" else "m",
         "ct":city, "st":"taiwan" if city else "",
         "country":"tw" if city else "", "zp":zip_code,
         "external_id": email or phone or name
-    }
-    for k,v in new_profile.items():
-        if v: profile[k]=v
-    user_profile_map[user_key]=profile
+    })
+    profile_map[user_key]=profile
     with locked_file(PROFILE_MAP_PATH,"wb") as f:
-        pickle.dump(user_profile_map, f)
+        pickle.dump(profile_map, f)
 
-    # ------ 準備 user_data ------
-    user_data = {}
-    # external_id：優先 email，其次 phone，再次姓名雜湊
-    ext_source = email or phone or name
-    user_data["external_id"] = hash_sha256(ext_source)
-
-    if fn:   user_data["fn"]  = hash_sha256(fn)
-    if ln:   user_data["ln"]  = hash_sha256(ln)
+    # ------ user_data 雜湊 ------
+    user_data = {"external_id": hash_sha256(email or phone or name)}
+    if fn:   user_data["fn"] = hash_sha256(fn)
+    if ln:   user_data["ln"] = hash_sha256(ln)
     if email: user_data["em"] = hash_sha256(email)
     if phone: user_data["ph"] = hash_sha256(phone)
     for fld in ("ct","st","country","zp"):
@@ -204,29 +199,29 @@ def submit():
                    "satisfaction":satisfaction,"suggestion":suggestion,
                    "submit_time":ts}
 
-    # ------ 重新產生後端 event_id ------
+    # ------ 後端 event_id ------
     event_id = f"evt_{int(time.time()*1000)}_{random.randint(1000,9999)}"
 
     payload = {
         "data":[{
             "event_name":"Purchase",
-            "event_time":int(datetime.now().timestamp()),
-            "event_id":event_id,
+            "event_time": int(datetime.now().timestamp()),
+            "event_id": event_id,
             "action_source":"system_generated",
-            "user_data":user_data,
-            "custom_data":custom_data
+            "user_data": user_data,
+            "custom_data": custom_data
         }],
-        "upload_tag":f"form_{ts}"
+        "upload_tag": f"form_{ts}"
     }
 
-    print("送出 Meta payload：", json.dumps(payload,ensure_ascii=False))
+    print("送出 Meta payload:", json.dumps(payload, ensure_ascii=False))
     resp = requests.post(API_URL, json=payload,
                          params={"access_token":ACCESS_TOKEN},
                          headers={"Content-Type":"application/json"})
-    print("Meta Dataset 回應：", resp.status_code, resp.text)
+    print("Meta Dataset 回應:", resp.status_code, resp.text)
 
-    # ------ 寄信通知 ------
-    send_email_with_attachment(file_path, raw_data)
+    # ------ Email 通知 ------
+    send_email_with_attachment(fpath, raw)
 
     return "感謝您提供寶貴建議！"
 
@@ -234,5 +229,5 @@ def submit():
 if __name__ == "__main__":
     for var in ["PIXEL_ID","ACCESS_TOKEN","FROM_EMAIL","EMAIL_PASSWORD","TO_EMAIL_1","TO_EMAIL_2"]:
         if var not in os.environ:
-            raise RuntimeError(f"❌ 未設定環境變數：{var}")
+            raise RuntimeError(f"❌ 缺少環境變數：{var}")
     app.run(host="0.0.0.0", port=10000)
