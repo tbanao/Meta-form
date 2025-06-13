@@ -1,54 +1,84 @@
-# app.py — Stable 2025-06-12
-import os, re, json, time, random, hashlib, logging, smtplib, requests, sys, fcntl
+# app.py — Stable 2025-06-12 (with real IP via ProxyFix)
+import os
+import re
+import json
+import time
+import random
+import hashlib
+import logging
+import smtplib
+import requests
+import sys
+import fcntl
+
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from email.message import EmailMessage
+
 from flask import Flask, request, render_template_string, redirect, session, make_response
 from openpyxl import Workbook
 
+# ── ProxyFix for real client IP ─────────────────
+from werkzeug.middleware.proxy_fix import ProxyFix
+
 # ── 必填 ENV ─────────────────────────────────────
-REQUIRED = ["PIXEL_ID","ACCESS_TOKEN",
-            "FROM_EMAIL","EMAIL_PASSWORD","TO_EMAIL_1","SECRET_KEY"]
+REQUIRED = [
+    "PIXEL_ID", "ACCESS_TOKEN",
+    "FROM_EMAIL", "EMAIL_PASSWORD", "TO_EMAIL_1", "SECRET_KEY"
+]
 missing = [v for v in REQUIRED if not os.getenv(v)]
 if missing:
-    logging.critical("缺少環境變數：%s", ", ".join(missing)); sys.exit(1)
+    logging.critical("缺少環境變數：%s", ", ".join(missing))
+    sys.exit(1)
 
 PIXEL_ID, TOKEN = os.getenv("PIXEL_ID"), os.getenv("ACCESS_TOKEN")
 API_URL  = f"https://graph.facebook.com/v19.0/{PIXEL_ID}/events"
 CURRENCY = "TWD"
-PRICES   = [19800,28800,34800,39800,45800]
+PRICES   = [19800, 28800, 34800, 39800, 45800]
 
 # ── 基本設定 ─────────────────────────────────────
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s: %(message)s",
-                    datefmt="%H:%M:%S")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S"
+)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY")
+
+# trust one proxy hop for X-Forwarded-For and X-Forwarded-Proto
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+
 HSTS = "max-age=63072000; includeSubDomains; preload"
 
 # ── 路徑 ─────────────────────────────────────────
-BACKUP = Path("form_backups"); BACKUP.mkdir(exist_ok=True)
-RETRY  = Path("retry_queue.jsonl"); RETRY.touch(exist_ok=True)
+BACKUP = Path("form_backups")
+BACKUP.mkdir(exist_ok=True)
+RETRY  = Path("retry_queue.jsonl")
+RETRY.touch(exist_ok=True)
 
 # ── 工具 ─────────────────────────────────────────
-sha  = lambda s: hashlib.sha256(s.encode()).hexdigest() if s else ""
-mask = lambda s,k=2: s[:k] + "*"*(max(0,len(s)-k-2)) + s[-2:] if s else ""
-def norm_phone(p:str):
-    p=re.sub(r"[^\d]","",p)
-    return ("886"+p.lstrip("0")) if p.startswith("09") else p
+sha = lambda s: hashlib.sha256(s.encode()).hexdigest() if s else ""
+mask = lambda s, k=2: s[:k] + "*"*(max(0, len(s)-k-2)) + s[-2:] if s else ""
+def norm_phone(p: str):
+    p = re.sub(r"[^\d]", "", p)
+    return ("886" + p.lstrip("0")) if p.startswith("09") else p
+
 @contextmanager
-def locked(p,m):
-    with open(p,m) as f:
-        fcntl.flock(f,fcntl.LOCK_EX); yield f; fcntl.flock(f,fcntl.LOCK_UN)
+def locked(p, m):
+    with open(p, m) as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield f
+        fcntl.flock(f, fcntl.LOCK_UN)
+
 def csrf():
     if "csrf" not in session:
-        session["csrf"]=hashlib.md5(os.urandom(16)).hexdigest()
+        session["csrf"] = hashlib.md5(os.urandom(16)).hexdigest()
     return session["csrf"]
 
 # ── HTML (Pixel + cookie 補齊)────────────────────
-HTML=f'''<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
+HTML = '''<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
 <title>服務滿意度調查</title>
 <style>
 body{{background:#f2f6fb;font-family:"微軟正黑體",Arial,sans-serif}}
@@ -79,11 +109,16 @@ function send(e){{
   e.preventDefault();
   if(!/^09\\d{{8}}$/.test(document.querySelector('[name=phone]').value))
     return alert('手機格式需 09xxxxxxxx'),!1;
-  const price=PRICES[Math.floor(Math.random()*PRICES.length)], id=gid();
+  const price=PRICES[Math.floor(Math.random()*PRICES.length)], 
+        id=gid();
   ['eid','price','fbc','fbp'].forEach(k=>document.getElementById(k).value=
-    k==='eid'?id:k==='price'?price:k==='fbc'?gC('_fbc'):gC('_fbp'));
-  fbq('track','Purchase',{{value:price,currency:"{CURRENCY}"}},
-      {{eventID:id,eventCallback:()=>e.target.submit()}});
+    k==='eid'?id
+    :k==='price'?price
+    :k==='fbc'?gC('_fbc')
+    :gC('_fbp'));
+  fbq('track','Purchase',
+    {{value:price,currency:"{CURRENCY}"}},
+    {{eventID:id,eventCallback:()=>e.target.submit()}});
   setTimeout(()=>e.target.submit(),800);
 }}
 </script></head><body>
@@ -92,7 +127,10 @@ function send(e){{
   <input type="hidden" name="csrf_token" value="{{{{csrf}}}}">
   姓名：<input name="name" required><br>
   出生年月日：<input type="date" name="birthday"><br>
-  性別：<select name="gender"><option value="female">女性</option><option value="male">男性</option></select><br>
+  性別：<select name="gender">
+    <option value="female">女性</option>
+    <option value="male">男性</option>
+  </select><br>
   Email：<input name="email" type="email" required><br>
   手機：<input name="phone" pattern="09\\d{{8}}" required><br>
   服務態度滿意度：<textarea name="satisfaction"></textarea><br>
@@ -107,88 +145,116 @@ function send(e){{
 # ── HTTPS / HSTS ───────────────────────────────
 @app.before_request
 def https_redirect():
-    if request.headers.get("X-Forwarded-Proto","http")!="https":
-        return redirect(request.url.replace("http://","https://"),301)
+    if request.headers.get("X-Forwarded-Proto", "http") != "https":
+        return redirect(request.url.replace("http://", "https://"), 301)
+
 @app.after_request
-def add_hsts(r): r.headers["Strict-Transport-Security"]=HSTS; return r
+def add_hsts(r):
+    r.headers["Strict-Transport-Security"] = HSTS
+    return r
 
 # ── Health & Index ────────────────────────────
 @app.route('/healthz')
 @app.route('/health')
-def health(): return "OK",200
+def health():
+    return "OK", 200
 
 @app.route('/')
-def index(): return render_template_string(HTML, csrf=csrf())
+def index():
+    return render_template_string(HTML, csrf=csrf())
 
 # ── Submit ────────────────────────────────────
 @app.route('/submit', methods=['POST'])
 def submit():
-    if request.form.get("csrf_token")!=session.get("csrf"): return "CSRF!",400
+    if request.form.get("csrf_token") != session.get("csrf"):
+        return "CSRF!", 400
 
-    d={k:request.form.get(k,"").strip() for k in
-       ("name","birthday","gender","email","phone","satisfaction","suggestion")}
-    d["phone"]=norm_phone(d["phone"])
-    price=int(request.form["price"]); eid=request.form["event_id"]
-    fbc=request.form.get("fbc",""); fbp=request.form.get("fbp","")
-    ts=datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    # 1. 讀表單並標準化
+    d = {k: request.form.get(k, "").strip() for k in
+         ("name", "birthday", "gender", "email", "phone", "satisfaction", "suggestion")}
+    d["phone"] = norm_phone(d["phone"])
+    price = int(request.form["price"])
+    eid = request.form["event_id"]
+    fbc = request.form.get("fbc", "")
+    fbp = request.form.get("fbp", "")
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-    # 1️⃣ Excel 備份
-    xls=BACKUP/f"{d['name']}_{ts}.xlsx"
-    wb=Workbook(); ws=wb.active
-    ws.append(list(d.keys())+["price","time"]); ws.append(list(d.values())+[price,ts])
+    # 2️⃣ Excel 備份
+    xls = BACKUP / f"{d['name']}_{ts}.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(list(d.keys()) + ["price", "time"])
+    ws.append(list(d.values()) + [price, ts])
     wb.save(xls)
 
-    # 2️⃣ CAPI
-    ud={"external_id":sha(d["email"] or d["phone"] or d["name"]),
-        "em":sha(d["email"]), "ph":sha(d["phone"]),
-        "client_ip_address":request.remote_addr or "",
-        "client_user_agent":request.headers.get("User-Agent",""),
-        "fbc":fbc,"fbp":fbp}
-    payload={"data":[{"event_name":"Purchase","event_time":int(time.time()),
-                      "event_id":eid,"action_source":"website",
-                      "user_data":ud,
-                      "custom_data":{"currency":CURRENCY,"value":price}}],
-             "upload_tag":f"form_{ts}"}
+    # 3️⃣ CAPI 上傳 (含真實 IP)
+    real_ip = request.remote_addr or ""
+    ud = {
+        "external_id": sha(d["email"] or d["phone"] or d["name"]),
+        "em": sha(d["email"]),
+        "ph": sha(d["phone"]),
+        "client_ip_address": real_ip,
+        "client_user_agent": request.headers.get("User-Agent", ""),
+        "fbc": fbc,
+        "fbp": fbp
+    }
+    payload = {
+        "data": [{
+            "event_name": "Purchase",
+            "event_time": int(time.time()),
+            "event_id": eid,
+            "action_source": "website",
+            "user_data": ud,
+            "custom_data": {"currency": CURRENCY, "value": price}
+        }],
+        "upload_tag": f"form_{ts}"
+    }
     try:
-        r=requests.post(API_URL,json=payload,params={"access_token":TOKEN},timeout=10)
-        logging.info("CAPI %s %s",r.status_code,r.text); r.raise_for_status()
+        r = requests.post(API_URL, json=payload, params={"access_token": TOKEN}, timeout=10)
+        logging.info("CAPI %s %s", r.status_code, r.text)
+        r.raise_for_status()
     except Exception as e:
-        logging.error("CAPI failed → queued retry: %s",e)
-        with RETRY.open("a",encoding="utf-8") as fp: fp.write(json.dumps(payload)+"\n")
+        logging.error("CAPI failed → queued retry: %s", e)
+        with RETRY.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(payload) + "\n")
 
-    # 3️⃣ Email
+    # 4️⃣ Email 通知
     try:
-        tos=[t for t in [os.getenv("TO_EMAIL_1"),os.getenv("TO_EMAIL_2")] if t]
-        if not tos: raise ValueError("TO_EMAIL_1 未設定")
-        body="\n".join([
+        tos = [t for t in [os.getenv("TO_EMAIL_1"), os.getenv("TO_EMAIL_2")] if t]
+        if not tos:
+            raise ValueError("TO_EMAIL_1 未設定")
+        body = "\n".join([
             f"姓名: {d['name']}",
             f"Email: {d['email']}",
             f"電話: {d['phone']}",
             f"生日: {d['birthday'] or '-'}",
             f"性別: {'男性' if d['gender']=='male' else '女性'}",
             f"服務態度滿意度: {d['satisfaction'] or '-'}",
-            "建議內容:\n"+(d['suggestion'] or "-")
+            "建議內容:\n" + (d['suggestion'] or "-")
         ])
-        msg=EmailMessage()
-        msg["Subject"]="新客戶表單回報"
-        msg["From"]=os.getenv("FROM_EMAIL")
-        msg["To"]=",".join(tos)
-        msg.set_content(body,charset="utf-8")
-        with open(xls,"rb") as fp:
-            msg.add_attachment(fp.read(),maintype="application",
-                               subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               filename=xls.name)
-        with smtplib.SMTP_SSL("smtp.gmail.com",465) as s:
+        msg = EmailMessage()
+        msg["Subject"] = "新客戶表單回報"
+        msg["From"] = os.getenv("FROM_EMAIL")
+        msg["To"] = ",".join(tos)
+        msg.set_content(body, charset="utf-8")
+        with open(xls, "rb") as fp:
+            msg.add_attachment(
+                fp.read(),
+                maintype="application",
+                subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                filename=xls.name
+            )
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
             s.login(os.getenv("FROM_EMAIL"), os.getenv("EMAIL_PASSWORD"))
             s.send_message(msg)
-        logging.info("✉️ Email sent → %s",msg["To"])
+        logging.info("✉️ Email sent → %s", msg["To"])
     except Exception:
         logging.exception("❌ Email 發送失敗")
 
-    return make_response("感謝您的填寫！",200)
+    return make_response("感謝您的填寫！", 200)
 
 # ── main ───────────────────────────────────────
-if __name__=="__main__":
-    port=int(os.getenv("PORT",8000))
-    logging.info("Listening on %s",port)
-    app.run("0.0.0.0",port)
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8000))
+    logging.info("Listening on %s", port)
+    app.run("0.0.0.0", port)
