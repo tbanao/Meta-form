@@ -1,21 +1,19 @@
-# app.py — Stable 2025-06-12 (with real IP via ProxyFix and Jinja raw blocks)
-import os
-import re
-import json
-import time
-import random
-import hashlib
-import logging
-import smtplib
-import requests
-import sys
-import fcntl
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+app.py — 強化覆蓋率＋詳細Email內容 2025-06-15
+1. 客戶填單時自動回傳姓名/生日/性別/國別(台灣)到Meta
+2. Email通知詳細（內文＋excel附檔）
+3. Meta回傳狀態紀錄於 Render Log
+"""
 
+import os, re, json, time, random, hashlib, logging, smtplib, sys, fcntl
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from email.message import EmailMessage
 
+import requests
 from flask import Flask, request, render_template_string, redirect, session, make_response
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -39,21 +37,17 @@ PRICES   = [19800, 28800, 34800, 39800, 45800]
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
-    datefmt="%H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY")
-# trust first proxy hop for real IP and protocol
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
-
 HSTS = "max-age=63072000; includeSubDomains; preload"
 
-# ── 路徑 ─────────────────────────────────────────
 BACKUP = Path("form_backups"); BACKUP.mkdir(exist_ok=True)
 RETRY  = Path("retry_queue.jsonl"); RETRY.touch(exist_ok=True)
 
-# ── 工具 ─────────────────────────────────────────
 sha = lambda s: hashlib.sha256(s.encode()).hexdigest() if s else ""
 def norm_phone(p: str):
     p = re.sub(r"[^\d]", "", p)
@@ -71,7 +65,16 @@ def csrf():
         session["csrf"] = hashlib.md5(os.urandom(16)).hexdigest()
     return session["csrf"]
 
-# ── HTML (Pixel + cookie + raw block)────────────────────
+def split_name(name):
+    name = name.strip()
+    if len(name) >= 2:
+        return name[0], name[1:]
+    elif name:
+        return name, ""
+    else:
+        return "", ""
+
+# ── HTML (Pixel + cookie + raw block) ───────────
 HTML = f'''<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
@@ -176,7 +179,7 @@ def submit():
     if request.form.get("csrf_token") != session.get("csrf"):
         return "CSRF!", 400
 
-    # 1. 讀表單並標準化
+    # 1️⃣ 讀表單並正規化
     d = {k: request.form.get(k, "").strip() for k in
          ("name","birthday","gender","email","phone","satisfaction","suggestion")}
     d["phone"] = norm_phone(d["phone"])
@@ -186,19 +189,30 @@ def submit():
     fbp   = request.form.get("fbp","")
     ts    = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-    # 2️⃣ Excel 備份
+    # 2️⃣ 姓名/生日/性別/國別補強
+    fn, ln = split_name(d["name"])
+    birthday = d["birthday"].replace("/", "-") if d["birthday"] else ""
+    gender = "f" if d["gender"].lower() in ["female", "f", "女"] else "m" if d["gender"].lower() in ["male", "m", "男"] else ""
+    country = "tw"
+
+    # 3️⃣ Excel 備份
     xls = BACKUP / f"{d['name']}_{ts}.xlsx"
     wb  = Workbook(); ws = wb.active
     ws.append(list(d.keys()) + ["price","time"])
     ws.append(list(d.values()) + [price, ts])
     wb.save(xls)
 
-    # 3️⃣ CAPI 上傳 (含真實 IP)
+    # 4️⃣ CAPI 上傳 (含真實 IP)
     real_ip = request.remote_addr or ""
     ud = {
         "external_id": sha(d["email"] or d["phone"] or d["name"]),
-        "em": sha(d["email"]),
+        "em": sha(d["email"].lower()),
         "ph": sha(d["phone"]),
+        "fn": sha(fn),
+        "ln": sha(ln),
+        "db": sha(birthday),
+        "ge": sha(gender),    # Meta 官方建議 gender 也要 hash
+        "country": sha(country),
         "client_ip_address": real_ip,
         "client_user_agent": request.headers.get("User-Agent",""),
         "fbc": fbc,
@@ -217,26 +231,29 @@ def submit():
     }
     try:
         r = requests.post(API_URL, json=payload, params={"access_token": TOKEN}, timeout=10)
-        logging.info("CAPI %s %s", r.status_code, r.text)
+        logging.info("Meta CAPI %s → %s", r.status_code, r.text)
         r.raise_for_status()
     except Exception as e:
         logging.error("CAPI failed → queued retry: %s", e)
         with RETRY.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(payload) + "\n")
 
-    # 4️⃣ Email 通知
+    # 5️⃣ Email 通知（詳細內容＋excel檔）
     try:
         tos = [t for t in [os.getenv("TO_EMAIL_1"), os.getenv("TO_EMAIL_2")] if t]
         if not tos:
             raise ValueError("TO_EMAIL_1 未設定")
         body = "\n".join([
-            f"姓名: {d['name']}",
-            f"Email: {d['email']}",
-            f"電話: {d['phone']}",
-            f"生日: {d['birthday'] or '-'}",
-            f"性別: {'男性' if d['gender']=='male' else '女性'}",
-            f"服務態度滿意度: {d['satisfaction'] or '-'}",
-            "建議內容:\n" + (d['suggestion'] or "-")
+            f"【填單時間】{ts}",
+            f"【姓名】{d['name']}",
+            f"【Email】{d['email']}",
+            f"【電話】{d['phone']}",
+            f"【生日】{d['birthday'] or '-'}",
+            f"【性別】{'男性' if gender=='m' else '女性' if gender=='f' else d['gender'] or '-'}",
+            f"【交易金額】NT${price:,}",
+            f"【Event ID】{eid}",
+            f"【服務態度滿意度】{d['satisfaction'] or '-'}",
+            f"【建議內容】\n{d['suggestion'] or '-'}"
         ])
         msg = EmailMessage()
         msg["Subject"] = "新客戶表單回報"
