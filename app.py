@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 強化覆蓋率＋詳細Email內容 2025-06-15
-1. 客戶填單時自動回傳姓名/生日/性別/國別(台灣)到Meta
-2. Email通知詳細（內文＋excel附檔）
-3. Meta回傳狀態紀錄於 Render Log
+app.py — event_id 保證唯一 + 避免 race condition + 雙信箱 + Meta 回傳 log + 共用 user_profile_map (2025-06-16)
 """
 
-import os, re, json, time, random, hashlib, logging, smtplib, sys, fcntl
+import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -18,10 +15,10 @@ from flask import Flask, request, render_template_string, redirect, session, mak
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-# ── 必填 ENV ─────────────────────────────────────
+# 必填 ENV
 REQUIRED = [
     "PIXEL_ID", "ACCESS_TOKEN",
-    "FROM_EMAIL", "EMAIL_PASSWORD", "TO_EMAIL_1", "SECRET_KEY"
+    "FROM_EMAIL", "EMAIL_PASSWORD", "TO_EMAIL_1", "TO_EMAIL_2", "SECRET_KEY"
 ]
 missing = [v for v in REQUIRED if not os.getenv(v)]
 if missing:
@@ -33,7 +30,10 @@ API_URL  = f"https://graph.facebook.com/v19.0/{PIXEL_ID}/events"
 CURRENCY = "TWD"
 PRICES   = [19800, 28800, 34800, 39800, 45800]
 
-# ── 基本設定 ─────────────────────────────────────
+USER_PROFILE_MAP_PATH = "user_profile_map.pkl"
+BACKUP = Path("form_backups"); BACKUP.mkdir(exist_ok=True)
+RETRY  = Path("retry_queue.jsonl"); RETRY.touch(exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
@@ -44,9 +44,6 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY")
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 HSTS = "max-age=63072000; includeSubDomains; preload"
-
-BACKUP = Path("form_backups"); BACKUP.mkdir(exist_ok=True)
-RETRY  = Path("retry_queue.jsonl"); RETRY.touch(exist_ok=True)
 
 sha = lambda s: hashlib.sha256(s.encode()).hexdigest() if s else ""
 def norm_phone(p: str):
@@ -74,7 +71,50 @@ def split_name(name):
     else:
         return "", ""
 
-# ── HTML (Pixel + cookie + raw block) ───────────
+def load_user_profile_map():
+    if os.path.exists(USER_PROFILE_MAP_PATH):
+        with open(USER_PROFILE_MAP_PATH, "rb") as f:
+            return pickle.load(f)
+    return {}
+
+def save_user_profile_map(user_profile_map):
+    with open(USER_PROFILE_MAP_PATH, "wb") as f:
+        pickle.dump(user_profile_map, f)
+
+def get_or_create_event_id(d, user_profile_map, new_eid):
+    keys = []
+    if d["email"]: keys.append(d["email"].lower())
+    if d["phone"]: keys.append(d["phone"])
+    if d["name"] and d["birthday"]: keys.append(f"{d['name']}|{d['birthday']}")
+    for k in keys:
+        eid = user_profile_map.get(k, {}).get("event_id")
+        if eid:
+            return eid
+    return new_eid
+
+def update_user_profile_map(d, fn, ln, birthday, gender, country, eid):
+    with locked(USER_PROFILE_MAP_PATH, "a+b"):
+        if os.path.getsize(USER_PROFILE_MAP_PATH) > 0:
+            with open(USER_PROFILE_MAP_PATH, "rb") as f:
+                user_profile_map = pickle.load(f)
+        else:
+            user_profile_map = {}
+        keys = set()
+        if d["email"]: keys.add(d["email"].lower())
+        if d["phone"]: keys.add(d["phone"])
+        if d["name"] and birthday: keys.add(f"{d['name']}|{birthday}")
+        for key in keys:
+            profile = user_profile_map.get(key, {})
+            profile.update({
+                "fn": fn, "ln": ln, "db": birthday, "ge": gender,
+                "country": country, "em": d["email"].lower(), "ph": d["phone"],
+                "name": d["name"], "birthday": birthday, "event_id": eid
+            })
+            user_profile_map[key] = profile
+        with open(USER_PROFILE_MAP_PATH, "wb") as f:
+            pickle.dump(user_profile_map, f)
+        logging.info(f"user_profile_map.pkl updated: {keys} event_id={eid}")
+
 HTML = f'''<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
@@ -89,7 +129,6 @@ HTML = f'''<!DOCTYPE html>
     button{{ background:#568cf5; color:#fff; border:none; font-weight:bold; padding:10px 0 }}
     button:hover{{ background:#376ad8 }}
   </style>
-
   {{% raw %}}
   <script>
   !function(f,b,e,v,n,t,s){{if(f.fbq)return;n=f.fbq=function(){{n.callMethod?
@@ -98,14 +137,12 @@ HTML = f'''<!DOCTYPE html>
     t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}}
   (window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
   fbq('init','{PIXEL_ID}'); fbq('track','PageView');
-
   function gC(n){{ return (document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)')||[])[2]||'' }}
   function sC(n,v){{ document.cookie = n + '=' + v + ';path=/;SameSite=Lax' }}
   (function(){{ if(!gC('_fbp')) sC('_fbp','fb.1.'+Date.now()/1000+'.'+Math.random().toString().slice(2));
     const id = new URLSearchParams(location.search).get('fbclid');
     if(id && !gC('_fbc')) sC('_fbc','fb.1.'+Date.now()/1000+'.'+id);
   }})();
-
   const PRICES = {PRICES};
   function gid(){{ return 'evt_' + Date.now() + '_' + Math.random().toString(36).slice(2) }}
   function send(e){{
@@ -152,7 +189,6 @@ HTML = f'''<!DOCTYPE html>
 </body>
 </html>'''
 
-# ── HTTPS / HSTS ───────────────────────────────
 @app.before_request
 def https_redirect():
     if request.headers.get("X-Forwarded-Proto","http") != "https":
@@ -163,7 +199,6 @@ def add_hsts(r):
     r.headers["Strict-Transport-Security"] = HSTS
     return r
 
-# ── Health & Index ────────────────────────────
 @app.route('/healthz')
 @app.route('/health')
 def health():
@@ -173,7 +208,6 @@ def health():
 def index():
     return render_template_string(HTML, csrf=csrf())
 
-# ── Submit ────────────────────────────────────
 @app.route('/submit', methods=['POST'])
 def submit():
     if request.form.get("csrf_token") != session.get("csrf"):
@@ -184,7 +218,7 @@ def submit():
          ("name","birthday","gender","email","phone","satisfaction","suggestion")}
     d["phone"] = norm_phone(d["phone"])
     price = int(request.form["price"])
-    eid   = request.form["event_id"]
+    new_eid = request.form["event_id"]
     fbc   = request.form.get("fbc","")
     fbp   = request.form.get("fbp","")
     ts    = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -195,14 +229,47 @@ def submit():
     gender = "f" if d["gender"].lower() in ["female", "f", "女"] else "m" if d["gender"].lower() in ["male", "m", "男"] else ""
     country = "tw"
 
-    # 3️⃣ Excel 備份
+    # 3️⃣ 載入 & 查找/建立 event_id（race condition 鎖定）
+    with locked(USER_PROFILE_MAP_PATH, "a+b"):
+        if os.path.getsize(USER_PROFILE_MAP_PATH) > 0:
+            with open(USER_PROFILE_MAP_PATH, "rb") as f:
+                user_profile_map = pickle.load(f)
+        else:
+            user_profile_map = {}
+
+        keys = []
+        if d["email"]: keys.append(d["email"].lower())
+        if d["phone"]: keys.append(d["phone"])
+        if d["name"] and birthday: keys.append(f"{d['name']}|{birthday}")
+
+        eid = None
+        for k in keys:
+            eid = user_profile_map.get(k, {}).get("event_id")
+            if eid: break
+        if not eid:
+            eid = new_eid
+
+        for key in keys:
+            profile = user_profile_map.get(key, {})
+            profile.update({
+                "fn": fn, "ln": ln, "db": birthday, "ge": gender,
+                "country": country, "em": d["email"].lower(), "ph": d["phone"],
+                "name": d["name"], "birthday": birthday, "event_id": eid
+            })
+            user_profile_map[key] = profile
+
+        with open(USER_PROFILE_MAP_PATH, "wb") as f:
+            pickle.dump(user_profile_map, f)
+        logging.info(f"user_profile_map.pkl updated: {keys} event_id={eid}")
+
+    # 4️⃣ Excel 備份
     xls = BACKUP / f"{d['name']}_{ts}.xlsx"
     wb  = Workbook(); ws = wb.active
     ws.append(list(d.keys()) + ["price","time"])
     ws.append(list(d.values()) + [price, ts])
     wb.save(xls)
 
-    # 4️⃣ CAPI 上傳 (含真實 IP)
+    # 5️⃣ CAPI 上傳 (含真實 IP)
     real_ip = request.remote_addr or ""
     ud = {
         "external_id": sha(d["email"] or d["phone"] or d["name"]),
@@ -211,7 +278,7 @@ def submit():
         "fn": sha(fn),
         "ln": sha(ln),
         "db": sha(birthday),
-        "ge": sha(gender),    # Meta 官方建議 gender 也要 hash
+        "ge": sha(gender),
         "country": sha(country),
         "client_ip_address": real_ip,
         "client_user_agent": request.headers.get("User-Agent",""),
@@ -238,11 +305,11 @@ def submit():
         with RETRY.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(payload) + "\n")
 
-    # 5️⃣ Email 通知（詳細內容＋excel檔）
+    # 6️⃣ Email 通知（詳細內容＋excel檔，雙信箱）
     try:
         tos = [t for t in [os.getenv("TO_EMAIL_1"), os.getenv("TO_EMAIL_2")] if t]
-        if not tos:
-            raise ValueError("TO_EMAIL_1 未設定")
+        if len(tos) < 2:
+            raise ValueError("TO_EMAIL_1 與 TO_EMAIL_2 必須都設定！")
         body = "\n".join([
             f"【填單時間】{ts}",
             f"【姓名】{d['name']}",
@@ -276,7 +343,6 @@ def submit():
 
     return make_response("感謝您的填寫！", 200)
 
-# ── main ───────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     logging.info("Listening on %s", port)
