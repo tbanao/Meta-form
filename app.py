@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 36小時內無真實事件自動補送測試事件＋手動觸發 (2025-06-18)
+app.py — 36小時內無真實事件自動補送測試事件＋手動觸發 (2025-06-18/19 修正版)
 """
 
 import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random
@@ -73,12 +73,10 @@ def split_name(name):
         return "", ""
 
 def log_event(ts, eid, fake=False):
-    # 寫入每次送事件的時間與型態
     with EVENT_LOG.open("a", encoding="utf-8") as f:
         f.write(f"{ts},{eid},{'test' if fake else 'real'}\n")
 
 def recent_real_event_within(hours=36):
-    """偵測是否有真實事件(非test)在指定小時內"""
     cutoff = time.time() - hours*3600
     if not EVENT_LOG.exists():
         return False
@@ -88,7 +86,7 @@ def recent_real_event_within(hours=36):
                 ts, eid, flag = line.strip().split(",", 2)
                 t = int(ts)
                 if t < cutoff:
-                    break  # 時間已過
+                    break
                 if flag == "real":
                     return True
             except:
@@ -99,7 +97,6 @@ def save_user_profile_map(user_profile_map):
     with open(USER_PROFILE_MAP_PATH, "wb") as f:
         pickle.dump(user_profile_map, f)
 
-# --- 手動或自動觸發測試事件 ---
 def send_test_event_to_meta():
     d = {
         "name": "測試事件_自動補件",
@@ -118,7 +115,6 @@ def send_test_event_to_meta():
     gender = "m"
     country = "tw"
 
-    # 更新user_profile_map
     with locked(USER_PROFILE_MAP_PATH, "a+b"):
         if os.path.getsize(USER_PROFILE_MAP_PATH) > 0:
             with open(USER_PROFILE_MAP_PATH, "rb") as f:
@@ -142,7 +138,6 @@ def send_test_event_to_meta():
             pickle.dump(user_profile_map, f)
         logging.info(f"[自動補事件] user_profile_map.pkl updated: {keys} event_id={eid}")
 
-    # Meta CAPI 上傳
     ud = {
         "external_id": sha(d["email"] or d["phone"] or d["name"]),
         "em": sha(d["email"].lower()),
@@ -176,10 +171,8 @@ def send_test_event_to_meta():
         logging.error("[自動補事件] CAPI failed: %s", e)
         with RETRY.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(payload) + "\n")
-    # log event
     log_event(ts, eid, fake=True)
 
-# --- 定時任務：每36小時檢查是否需補事件 ---
 def auto_check_and_send_event():
     while True:
         if not recent_real_event_within(hours=36):
@@ -193,7 +186,7 @@ threading.Thread(target=auto_check_and_send_event, daemon=True).start()
 
 @app.route("/send_test_event/<secret>")
 def send_test_event(secret):
-    if secret != "tbanao688":  # <--- 改成你自己的密碼
+    if secret != "tbanao688":  # 改成你自己的密碼
         return "Unauthorized", 403
     send_test_event_to_meta()
     return "測試事件已送出！", 200
@@ -214,23 +207,23 @@ HTML = '''<!DOCTYPE html>
   </style>
   {% raw %}
   <script>
-  !function(f,b,e,v,n,t,s){{if(f.fbq)return;n=f.fbq=function(){{n.callMethod?
-    n.callMethod.apply(n,arguments):n.queue.push(arguments)}};if(!f._fbq)f._fbq=n;
+  !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+    n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
     n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
-    t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}}
+    t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}
   (window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
   fbq('init','{{PIXEL_ID}}'); fbq('track','PageView');
-  function gC(n){{ return (document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)')||[])[2]||'' }}
-  function sC(n,v){{ document.cookie = n + '=' + v + ';path=/;SameSite=Lax' }}
-  (function(){{ if(!gC('_fbp')) sC('_fbp','fb.1.'+Date.now()/1000+'.'+Math.random().toString().slice(2));
+  function gC(n){ return (document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)')||[])[2]||'' }
+  function sC(n,v){ document.cookie = n + '=' + v + ';path=/;SameSite=Lax' }
+  (function(){ if(!gC('_fbp')) sC('_fbp','fb.1.'+Date.now()/1000+'.'+Math.random().toString().slice(2));
     const id = new URLSearchParams(location.search).get('fbclid');
     if(id && !gC('_fbc')) sC('_fbc','fb.1.'+Date.now()/1000+'.'+id);
-  }})();
+  })();
   const PRICES = {{PRICES}};
-  function gid(){{ return 'evt_' + Date.now() + '_' + Math.random().toString(36).slice(2) }}
-  function send(e){{
+  function gid(){ return 'evt_' + Date.now() + '_' + Math.random().toString(36).slice(2) }
+  function send(e){
     e.preventDefault();
-    if(!/^09\\d{{8}}$/.test(document.querySelector('[name=phone]').value))
+    if(!/^09\d{8}$/.test(document.querySelector('[name=phone]').value))
       return alert('手機格式需 09xxxxxxxx'), false;
     const price = PRICES[Math.floor(Math.random()*PRICES.length)];
     const id = gid();
@@ -238,11 +231,11 @@ HTML = '''<!DOCTYPE html>
       k==='eid'? id : k==='price'? price : k==='fbc'? gC('_fbc') : gC('_fbp')
     );
     fbq('track','Purchase',
-      {{ value:price, currency:"{{CURRENCY}}" }},
-      {{ eventID:id, eventCallback:()=>e.target.submit() }}
+      { value:price, currency:"{{CURRENCY}}" },
+      { eventID:id, eventCallback:()=>e.target.submit() }
     );
     setTimeout(()=>e.target.submit(),800);
-  }}
+  }
   </script>
   {% endraw %}
 </head>
@@ -259,7 +252,7 @@ HTML = '''<!DOCTYPE html>
         <option value="male">男性</option>
       </select><br>
       Email：<input name="email" type="email" required><br>
-      手機：<input name="phone" pattern="09\\d{{8}}" required><br>
+      手機：<input name="phone" pattern="09\\d{8}" required><br>
       您覺得我們小編服務態度如何？：<textarea name="satisfaction"></textarea><br>
       建議：<textarea name="suggestion"></textarea><br>
       <input type="hidden" id="eid"   name="event_id">
@@ -310,7 +303,6 @@ def submit():
     gender = "f" if d["gender"].lower() in ["female", "f", "女"] else "m" if d["gender"].lower() in ["male", "m", "男"] else ""
     country = "tw"
 
-    # user_profile_map 補強
     with locked(USER_PROFILE_MAP_PATH, "a+b"):
         if os.path.getsize(USER_PROFILE_MAP_PATH) > 0:
             with open(USER_PROFILE_MAP_PATH, "rb") as f:
@@ -385,7 +377,6 @@ def submit():
         logging.error("CAPI failed → queued retry: %s", e)
         with RETRY.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(payload) + "\n")
-    # 記錄event送出時間 (real)
     log_event(ts, eid, fake=False)
 
     # Email 通知
