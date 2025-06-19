@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 36小時內無真實事件自動補送測試事件＋手動觸發 (2025-06-19 Jinja2修正版)
+app.py — 36小時內無真實事件自動補送測試事件＋手動觸發＋生日三欄下拉選單 (2025-06-19)
 """
 
 import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from email.message import EmailMessage
 
@@ -204,8 +204,11 @@ HTML = '''<!DOCTYPE html>
       border:1px solid #ccc; border-radius:4px; font-size:16px; background:#fafbfc }
     button{ background:#568cf5; color:#fff; border:none; font-weight:bold; padding:10px 0 }
     button:hover{ background:#376ad8 }
+    .inline-group{ display:flex; gap:6px; justify-content:center; align-items:center; }
+    .inline-group select{ width:auto; }
   </style>
   <script>
+  // FB Pixel
   !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
     n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
     n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
@@ -220,8 +223,40 @@ HTML = '''<!DOCTYPE html>
   })();
   const PRICES = {{PRICES}};
   function gid(){ return 'evt_' + Date.now() + '_' + Math.random().toString(36).slice(2) }
+
+  // 下拉選單自動產生
+  window.addEventListener('DOMContentLoaded',()=>{
+    const now = new Date();
+    const y = now.getFullYear();
+    let yearSel = document.getElementById('byear');
+    let monthSel = document.getElementById('bmonth');
+    let daySel = document.getElementById('bday');
+    for(let i=y-90; i<=y; i++) {
+      let o=document.createElement('option'); o.value=i; o.text=i;
+      if(i===y-25) o.selected=true;
+      yearSel.appendChild(o);
+    }
+    for(let i=1; i<=12; i++) {
+      let o=document.createElement('option'); o.value=i.toString().padStart(2,'0'); o.text=i;
+      monthSel.appendChild(o);
+    }
+    for(let i=1; i<=31; i++) {
+      let o=document.createElement('option'); o.value=i.toString().padStart(2,'0'); o.text=i;
+      daySel.appendChild(o);
+    }
+    // 組合三欄到 birthday
+    function updateBirthday() {
+      document.getElementById('birthday').value =
+        yearSel.value + "-" + monthSel.value + "-" + daySel.value;
+    }
+    [yearSel, monthSel, daySel].forEach(s=>s.addEventListener('change', updateBirthday));
+    updateBirthday();
+  });
+
+  // 表單送出
   function send(e){
     e.preventDefault();
+    // birthday 已經自動組合好
     if(!/^09\d{8}$/.test(document.querySelector('[name=phone]').value))
       return alert('手機格式需 09xxxxxxxx'), false;
     const price = PRICES[Math.floor(Math.random()*PRICES.length)];
@@ -243,7 +278,13 @@ HTML = '''<!DOCTYPE html>
     <form onsubmit="send(event)" method="post" action="/submit">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       姓名：<input name="name" required><br>
-      出生年月日：<input type="date" name="birthday"><br>
+      出生年月日：
+        <div class="inline-group">
+          <select id="byear"></select> 年
+          <select id="bmonth"></select> 月
+          <select id="bday"></select> 日
+        </div>
+        <input type="hidden" name="birthday" id="birthday"><br>
       性別：
       <select name="gender">
         <option value="female">女性</option>
