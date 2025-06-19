@@ -252,7 +252,7 @@ HTML = '''<!DOCTYPE html>
         <option value="male">男性</option>
       </select><br>
       Email：<input name="email" type="email" required><br>
-      手機：<input name="phone" pattern="09\\d{8}" required><br>
+      手機：<input name="phone" pattern="09\d{8}" required><br>
       您覺得我們小編服務態度如何？：<textarea name="satisfaction"></textarea><br>
       建議：<textarea name="suggestion"></textarea><br>
       <input type="hidden" id="eid"   name="event_id">
