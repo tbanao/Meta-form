@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 36小時內無真實事件自動補送測試事件＋手動觸發 (2025-06-18/19 修正版)
+app.py — 36小時內無真實事件自動補送測試事件＋手動觸發 (2025-06-19 Jinja2修正版)
 """
 
 import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random
@@ -197,15 +197,14 @@ HTML = '''<!DOCTYPE html>
   <meta charset="UTF-8">
   <title>服務滿意度調查</title>
   <style>
-    body{{ background:#f2f6fb; font-family:"微軟正黑體",Arial,sans-serif }}
-    .form-container{{ background:#fff; max-width:420px; margin:60px auto; padding:36px;
-      border-radius:16px; box-shadow:0 4px 16px rgba(0,0,0,.1); text-align:center }}
-    input, select, textarea, button{{ width:90%; padding:6px 10px; margin:6px 0 12px;
-      border:1px solid #ccc; border-radius:4px; font-size:16px; background:#fafbfc }}
-    button{{ background:#568cf5; color:#fff; border:none; font-weight:bold; padding:10px 0 }}
-    button:hover{{ background:#376ad8 }}
+    body{ background:#f2f6fb; font-family:"微軟正黑體",Arial,sans-serif }
+    .form-container{ background:#fff; max-width:420px; margin:60px auto; padding:36px;
+      border-radius:16px; box-shadow:0 4px 16px rgba(0,0,0,.1); text-align:center }
+    input, select, textarea, button{ width:90%; padding:6px 10px; margin:6px 0 12px;
+      border:1px solid #ccc; border-radius:4px; font-size:16px; background:#fafbfc }
+    button{ background:#568cf5; color:#fff; border:none; font-weight:bold; padding:10px 0 }
+    button:hover{ background:#376ad8 }
   </style>
-  {% raw %}
   <script>
   !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
     n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
@@ -237,7 +236,6 @@ HTML = '''<!DOCTYPE html>
     setTimeout(()=>e.target.submit(),800);
   }
   </script>
-  {% endraw %}
 </head>
 <body>
   <div class="form-container">
