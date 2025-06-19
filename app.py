@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — event_id 保證唯一 + 避免 race condition + 雙信箱 + Meta 回傳 log + 共用 user_profile_map (2025-06-16)
+app.py — 36小時內無真實事件自動補送測試事件＋手動觸發 (2025-06-18)
 """
 
-import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle
+import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from email.message import EmailMessage
 
@@ -15,7 +15,7 @@ from flask import Flask, request, render_template_string, redirect, session, mak
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-# 必填 ENV
+# ====== 環境變數設定 ======
 REQUIRED = [
     "PIXEL_ID", "ACCESS_TOKEN",
     "FROM_EMAIL", "EMAIL_PASSWORD", "TO_EMAIL_1", "TO_EMAIL_2", "SECRET_KEY"
@@ -33,6 +33,7 @@ PRICES   = [19800, 28800, 34800, 39800, 45800]
 USER_PROFILE_MAP_PATH = "user_profile_map.pkl"
 BACKUP = Path("form_backups"); BACKUP.mkdir(exist_ok=True)
 RETRY  = Path("retry_queue.jsonl"); RETRY.touch(exist_ok=True)
+EVENT_LOG = Path("event_submit_log.txt")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,38 +72,64 @@ def split_name(name):
     else:
         return "", ""
 
-def load_user_profile_map():
-    if os.path.exists(USER_PROFILE_MAP_PATH):
-        with open(USER_PROFILE_MAP_PATH, "rb") as f:
-            return pickle.load(f)
-    return {}
+def log_event(ts, eid, fake=False):
+    # 寫入每次送事件的時間與型態
+    with EVENT_LOG.open("a", encoding="utf-8") as f:
+        f.write(f"{ts},{eid},{'test' if fake else 'real'}\n")
+
+def recent_real_event_within(hours=36):
+    """偵測是否有真實事件(非test)在指定小時內"""
+    cutoff = time.time() - hours*3600
+    if not EVENT_LOG.exists():
+        return False
+    with EVENT_LOG.open("r", encoding="utf-8") as f:
+        for line in reversed(list(f)):
+            try:
+                ts, eid, flag = line.strip().split(",", 2)
+                t = int(ts)
+                if t < cutoff:
+                    break  # 時間已過
+                if flag == "real":
+                    return True
+            except:
+                continue
+    return False
 
 def save_user_profile_map(user_profile_map):
     with open(USER_PROFILE_MAP_PATH, "wb") as f:
         pickle.dump(user_profile_map, f)
 
-def get_or_create_event_id(d, user_profile_map, new_eid):
-    keys = []
-    if d["email"]: keys.append(d["email"].lower())
-    if d["phone"]: keys.append(d["phone"])
-    if d["name"] and d["birthday"]: keys.append(f"{d['name']}|{d['birthday']}")
-    for k in keys:
-        eid = user_profile_map.get(k, {}).get("event_id")
-        if eid:
-            return eid
-    return new_eid
+# --- 手動或自動觸發測試事件 ---
+def send_test_event_to_meta():
+    d = {
+        "name": "測試事件_自動補件",
+        "birthday": "2000-01-01",
+        "gender": "male",
+        "email": f"test{int(time.time())}@thairayshin.com",
+        "phone": f"09{random.randint(10000000, 99999999)}",
+        "satisfaction": "自動測試事件",
+        "suggestion": "自動補事件",
+    }
+    price = random.choice(PRICES)
+    new_eid = f"auto_test_{int(time.time())}"
+    ts    = int(time.time())
+    fn, ln = split_name(d["name"])
+    birthday = d["birthday"]
+    gender = "m"
+    country = "tw"
 
-def update_user_profile_map(d, fn, ln, birthday, gender, country, eid):
+    # 更新user_profile_map
     with locked(USER_PROFILE_MAP_PATH, "a+b"):
         if os.path.getsize(USER_PROFILE_MAP_PATH) > 0:
             with open(USER_PROFILE_MAP_PATH, "rb") as f:
                 user_profile_map = pickle.load(f)
         else:
             user_profile_map = {}
-        keys = set()
-        if d["email"]: keys.add(d["email"].lower())
-        if d["phone"]: keys.add(d["phone"])
-        if d["name"] and birthday: keys.add(f"{d['name']}|{birthday}")
+        keys = []
+        if d["email"]: keys.append(d["email"].lower())
+        if d["phone"]: keys.append(d["phone"])
+        if d["name"] and birthday: keys.append(f"{d['name']}|{birthday}")
+        eid = new_eid
         for key in keys:
             profile = user_profile_map.get(key, {})
             profile.update({
@@ -113,9 +140,65 @@ def update_user_profile_map(d, fn, ln, birthday, gender, country, eid):
             user_profile_map[key] = profile
         with open(USER_PROFILE_MAP_PATH, "wb") as f:
             pickle.dump(user_profile_map, f)
-        logging.info(f"user_profile_map.pkl updated: {keys} event_id={eid}")
+        logging.info(f"[自動補事件] user_profile_map.pkl updated: {keys} event_id={eid}")
 
-HTML = f'''<!DOCTYPE html>
+    # Meta CAPI 上傳
+    ud = {
+        "external_id": sha(d["email"] or d["phone"] or d["name"]),
+        "em": sha(d["email"].lower()),
+        "ph": sha(d["phone"]),
+        "fn": sha(fn),
+        "ln": sha(ln),
+        "db": sha(birthday),
+        "ge": sha(gender),
+        "country": sha(country),
+        "client_ip_address": "127.0.0.1",
+        "client_user_agent": "auto-fake-event",
+        "fbc": "",
+        "fbp": ""
+    }
+    payload = {
+        "data": [{
+            "event_name": "Purchase",
+            "event_time": ts,
+            "event_id": eid,
+            "action_source": "website",
+            "user_data": ud,
+            "custom_data": {"currency": CURRENCY, "value": price}
+        }],
+        "upload_tag": f"auto_test_{datetime.utcfromtimestamp(ts).strftime('%Y%m%d_%H%M%S')}"
+    }
+    try:
+        r = requests.post(API_URL, json=payload, params={"access_token": TOKEN}, timeout=10)
+        logging.info("[自動補事件] Meta CAPI %s → %s", r.status_code, r.text)
+        r.raise_for_status()
+    except Exception as e:
+        logging.error("[自動補事件] CAPI failed: %s", e)
+        with RETRY.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(payload) + "\n")
+    # log event
+    log_event(ts, eid, fake=True)
+
+# --- 定時任務：每36小時檢查是否需補事件 ---
+def auto_check_and_send_event():
+    while True:
+        if not recent_real_event_within(hours=36):
+            logging.info("[定時補事件] 36小時內無真實事件，補發測試事件")
+            send_test_event_to_meta()
+        else:
+            logging.info("[定時補事件] 36小時內已有真實事件，不補發")
+        time.sleep(36*3600)
+
+threading.Thread(target=auto_check_and_send_event, daemon=True).start()
+
+@app.route("/send_test_event/<secret>")
+def send_test_event(secret):
+    if secret != "tbanao688":  # <--- 改成你自己的密碼
+        return "Unauthorized", 403
+    send_test_event_to_meta()
+    return "測試事件已送出！", 200
+
+HTML = '''<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
@@ -129,21 +212,21 @@ HTML = f'''<!DOCTYPE html>
     button{{ background:#568cf5; color:#fff; border:none; font-weight:bold; padding:10px 0 }}
     button:hover{{ background:#376ad8 }}
   </style>
-  {{% raw %}}
+  {% raw %}
   <script>
   !function(f,b,e,v,n,t,s){{if(f.fbq)return;n=f.fbq=function(){{n.callMethod?
     n.callMethod.apply(n,arguments):n.queue.push(arguments)}};if(!f._fbq)f._fbq=n;
     n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
     t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}}
   (window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
-  fbq('init','{PIXEL_ID}'); fbq('track','PageView');
+  fbq('init','{{PIXEL_ID}}'); fbq('track','PageView');
   function gC(n){{ return (document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)')||[])[2]||'' }}
   function sC(n,v){{ document.cookie = n + '=' + v + ';path=/;SameSite=Lax' }}
   (function(){{ if(!gC('_fbp')) sC('_fbp','fb.1.'+Date.now()/1000+'.'+Math.random().toString().slice(2));
     const id = new URLSearchParams(location.search).get('fbclid');
     if(id && !gC('_fbc')) sC('_fbc','fb.1.'+Date.now()/1000+'.'+id);
   }})();
-  const PRICES = {PRICES};
+  const PRICES = {{PRICES}};
   function gid(){{ return 'evt_' + Date.now() + '_' + Math.random().toString(36).slice(2) }}
   function send(e){{
     e.preventDefault();
@@ -155,19 +238,19 @@ HTML = f'''<!DOCTYPE html>
       k==='eid'? id : k==='price'? price : k==='fbc'? gC('_fbc') : gC('_fbp')
     );
     fbq('track','Purchase',
-      {{ value:price, currency:"{CURRENCY}" }},
+      {{ value:price, currency:"{{CURRENCY}}" }},
       {{ eventID:id, eventCallback:()=>e.target.submit() }}
     );
     setTimeout(()=>e.target.submit(),800);
   }}
   </script>
-  {{% endraw %}}
+  {% endraw %}
 </head>
 <body>
   <div class="form-container">
     <h2>服務滿意度調查</h2>
     <form onsubmit="send(event)" method="post" action="/submit">
-      <input type="hidden" name="csrf_token" value="{{{{ csrf }}}}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
       姓名：<input name="name" required><br>
       出生年月日：<input type="date" name="birthday"><br>
       性別：
@@ -177,7 +260,7 @@ HTML = f'''<!DOCTYPE html>
       </select><br>
       Email：<input name="email" type="email" required><br>
       手機：<input name="phone" pattern="09\\d{{8}}" required><br>
-      服務態度滿意度：<textarea name="satisfaction"></textarea><br>
+      您覺得我們小編服務態度如何？：<textarea name="satisfaction"></textarea><br>
       建議：<textarea name="suggestion"></textarea><br>
       <input type="hidden" id="eid"   name="event_id">
       <input type="hidden" id="price" name="price">
@@ -206,14 +289,13 @@ def health():
 
 @app.route('/')
 def index():
-    return render_template_string(HTML, csrf=csrf())
+    return render_template_string(HTML, csrf=csrf(), PIXEL_ID=PIXEL_ID, PRICES=PRICES, CURRENCY=CURRENCY)
 
 @app.route('/submit', methods=['POST'])
 def submit():
     if request.form.get("csrf_token") != session.get("csrf"):
         return "CSRF!", 400
 
-    # 1️⃣ 讀表單並正規化
     d = {k: request.form.get(k, "").strip() for k in
          ("name","birthday","gender","email","phone","satisfaction","suggestion")}
     d["phone"] = norm_phone(d["phone"])
@@ -221,15 +303,14 @@ def submit():
     new_eid = request.form["event_id"]
     fbc   = request.form.get("fbc","")
     fbp   = request.form.get("fbp","")
-    ts    = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts    = int(time.time())
 
-    # 2️⃣ 姓名/生日/性別/國別補強
     fn, ln = split_name(d["name"])
     birthday = d["birthday"].replace("/", "-") if d["birthday"] else ""
     gender = "f" if d["gender"].lower() in ["female", "f", "女"] else "m" if d["gender"].lower() in ["male", "m", "男"] else ""
     country = "tw"
 
-    # 3️⃣ 載入 & 查找/建立 event_id（race condition 鎖定）
+    # user_profile_map 補強
     with locked(USER_PROFILE_MAP_PATH, "a+b"):
         if os.path.getsize(USER_PROFILE_MAP_PATH) > 0:
             with open(USER_PROFILE_MAP_PATH, "rb") as f:
@@ -262,14 +343,14 @@ def submit():
             pickle.dump(user_profile_map, f)
         logging.info(f"user_profile_map.pkl updated: {keys} event_id={eid}")
 
-    # 4️⃣ Excel 備份
-    xls = BACKUP / f"{d['name']}_{ts}.xlsx"
+    # Excel 備份
+    xls = BACKUP / f"{d['name']}_{datetime.utcfromtimestamp(ts).strftime('%Y%m%d_%H%M%S')}.xlsx"
     wb  = Workbook(); ws = wb.active
     ws.append(list(d.keys()) + ["price","time"])
-    ws.append(list(d.values()) + [price, ts])
+    ws.append(list(d.values()) + [price, datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')])
     wb.save(xls)
 
-    # 5️⃣ CAPI 上傳 (含真實 IP)
+    # Meta CAPI 上傳
     real_ip = request.remote_addr or ""
     ud = {
         "external_id": sha(d["email"] or d["phone"] or d["name"]),
@@ -288,13 +369,13 @@ def submit():
     payload = {
         "data": [{
             "event_name": "Purchase",
-            "event_time": int(time.time()),
+            "event_time": ts,
             "event_id": eid,
             "action_source": "website",
             "user_data": ud,
             "custom_data": {"currency": CURRENCY, "value": price}
         }],
-        "upload_tag": f"form_{ts}"
+        "upload_tag": f"form_{datetime.utcfromtimestamp(ts).strftime('%Y%m%d_%H%M%S')}"
     }
     try:
         r = requests.post(API_URL, json=payload, params={"access_token": TOKEN}, timeout=10)
@@ -304,14 +385,16 @@ def submit():
         logging.error("CAPI failed → queued retry: %s", e)
         with RETRY.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(payload) + "\n")
+    # 記錄event送出時間 (real)
+    log_event(ts, eid, fake=False)
 
-    # 6️⃣ Email 通知（詳細內容＋excel檔，雙信箱）
+    # Email 通知
     try:
         tos = [t for t in [os.getenv("TO_EMAIL_1"), os.getenv("TO_EMAIL_2")] if t]
         if len(tos) < 2:
             raise ValueError("TO_EMAIL_1 與 TO_EMAIL_2 必須都設定！")
         body = "\n".join([
-            f"【填單時間】{ts}",
+            f"【填單時間】{datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')}",
             f"【姓名】{d['name']}",
             f"【Email】{d['email']}",
             f"【電話】{d['phone']}",
