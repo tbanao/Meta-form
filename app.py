@@ -175,14 +175,17 @@ def send_test_event_to_meta():
 
 def auto_check_and_send_event():
     while True:
-        if not recent_real_event_within(hours=36):
-            logging.info("[定時補事件] 36小時內無真實事件，補發測試事件")
+        # 若24小時內沒有真實事件，立刻補發測試事件
+        if not recent_real_event_within(hours=24):
+            logging.info("[定時補事件] 超過24小時無真實事件，補發測試事件")
             send_test_event_to_meta()
         else:
-            logging.info("[定時補事件] 36小時內已有真實事件，不補發")
-        time.sleep(36*3600)
+            logging.info("[定時補事件] 24小時內已有真實事件，不補發")
+        time.sleep(3600)  # 每小時檢查一次
 
+# 啟動定時執行緒
 threading.Thread(target=auto_check_and_send_event, daemon=True).start()
+
 
 @app.route("/send_test_event/<secret>")
 def send_test_event(secret):
