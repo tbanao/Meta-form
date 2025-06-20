@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 36小時內無真實事件自動補送測試事件＋手動觸發＋生日三欄下拉選單 (2025-06-19)
+app.py — 2025-06-20
+- 自動補件動態依據最近30天真實件33%，最高50%（四捨五入）
+- 每小時檢查，48小時內無真實事件才補
+- 剛佈署不會立刻補件
+- 發送測試事件會同步 Email 通報 TO_EMAIL_1、TO_EMAIL_2
 """
 
 import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random
@@ -76,7 +80,24 @@ def log_event(ts, eid, fake=False):
     with EVENT_LOG.open("a", encoding="utf-8") as f:
         f.write(f"{ts},{eid},{'test' if fake else 'real'}\n")
 
-def recent_real_event_within(hours=36):
+def count_events(flag="real", days=30):
+    now = time.time()
+    cutoff = now - days*86400
+    if not EVENT_LOG.exists():
+        return 0
+    count = 0
+    with EVENT_LOG.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                ts, eid, ftype = line.strip().split(",", 2)
+                t = int(ts)
+                if t >= cutoff and ftype == flag:
+                    count += 1
+            except:
+                continue
+    return count
+
+def recent_real_event_within(hours=48):
     cutoff = time.time() - hours*3600
     if not EVENT_LOG.exists():
         return False
@@ -93,11 +114,7 @@ def recent_real_event_within(hours=36):
                 continue
     return False
 
-def save_user_profile_map(user_profile_map):
-    with open(USER_PROFILE_MAP_PATH, "wb") as f:
-        pickle.dump(user_profile_map, f)
-
-def send_test_event_to_meta():
+def send_test_event_to_meta(reason="自動補件", safe_max=0, hard_max=0, real_count=0, test_count=0):
     d = {
         "name": "測試事件_自動補件",
         "birthday": "2000-01-01",
@@ -115,6 +132,7 @@ def send_test_event_to_meta():
     gender = "m"
     country = "tw"
 
+    # --- 儲存補件資料
     with locked(USER_PROFILE_MAP_PATH, "a+b"):
         if os.path.getsize(USER_PROFILE_MAP_PATH) > 0:
             with open(USER_PROFILE_MAP_PATH, "rb") as f:
@@ -173,25 +191,65 @@ def send_test_event_to_meta():
             fp.write(json.dumps(payload) + "\n")
     log_event(ts, eid, fake=True)
 
+    # ---- 發送 Email 詳細通報 ----
+    try:
+        tos = [t for t in [os.getenv("TO_EMAIL_1"), os.getenv("TO_EMAIL_2")] if t]
+        if not tos: raise ValueError("TO_EMAIL_1/2 必須設定")
+        now = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+        body = f"""【Meta 自動補件通報】
+通報時間：{now}
+補件原因：{reason}
+本次測試事件 event_id：{new_eid}
+送出金額：NT${price:,}
+近 30 天真實事件數：{real_count}
+近 30 天測試事件數：{test_count + 1}
+安全補件上限（33%）：{safe_max}
+最高補件上限（50%）：{hard_max}
+
+如補件超過安全值，已進入救急模式，請檢查真實成交是否異常減少！
+
+【備註】此信為自動通知，請勿回覆。
+"""
+        msg = EmailMessage()
+        msg["Subject"] = "【自動補件通報】Meta 補送測試事件通知"
+        msg["From"]    = os.getenv("FROM_EMAIL")
+        msg["To"]      = ",".join(tos)
+        msg.set_content(body, charset="utf-8")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+            s.login(os.getenv("FROM_EMAIL"), os.getenv("EMAIL_PASSWORD"))
+            s.send_message(msg)
+        logging.info("✉️ Email sent → %s", msg["To"])
+    except Exception:
+        logging.exception("❌ Email 發送失敗（自動補件通報）")
+
 def auto_check_and_send_event():
+    # 每小時檢查一次。滿48小時沒真實件才考慮補件
     while True:
-        # 若24小時內沒有真實事件，立刻補發測試事件
-        if not recent_real_event_within(hours=24):
-            logging.info("[定時補事件] 超過24小時無真實事件，補發測試事件")
-            send_test_event_to_meta()
+        if not recent_real_event_within(hours=48):
+            real_count = count_events(flag="real", days=30)
+            test_count = count_events(flag="test", days=30)
+            safe_max = max(round(real_count * 0.33), 1)     # 33% 四捨五入，至少1筆
+            hard_max = max(round(real_count * 0.5), 2)      # 50% 四捨五入，至少2筆
+            if test_count < safe_max:
+                logging.info(f"[定時補事件] 測試事件({test_count}) < 安全上限({safe_max})，補發測試事件")
+                send_test_event_to_meta(reason="自動補件", safe_max=safe_max, hard_max=hard_max, real_count=real_count, test_count=test_count)
+            elif test_count < hard_max:
+                logging.warning(f"[救急補件] 測試事件({test_count})已超過安全上限({safe_max})，但未超過最高上限({hard_max})，補發救急測試事件")
+                send_test_event_to_meta(reason="救急補件", safe_max=safe_max, hard_max=hard_max, real_count=real_count, test_count=test_count)
+            else:
+                logging.info(f"[定時補事件] 測試事件({test_count})已達最高上限({hard_max})，暫停補發")
         else:
-            logging.info("[定時補事件] 24小時內已有真實事件，不補發")
+            logging.info("[定時補事件] 48小時內已有真實事件，不補發")
         time.sleep(3600)  # 每小時檢查一次
 
-# 啟動定時執行緒
+# 啟動自動補件執行緒
 threading.Thread(target=auto_check_and_send_event, daemon=True).start()
-
 
 @app.route("/send_test_event/<secret>")
 def send_test_event(secret):
-    if secret != "tbanao688":  # 改成你自己的密碼
+    if secret != "tbanao688":  # 請改成你的密碼
         return "Unauthorized", 403
-    send_test_event_to_meta()
+    send_test_event_to_meta(reason="手動觸發", safe_max=0, hard_max=0, real_count=0, test_count=0)
     return "測試事件已送出！", 200
 
 HTML = '''<!DOCTYPE html>
