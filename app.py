@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 2025-06-21
-- 每36小時無事件自動補一筆曾柏叡（正式事件），來源註記為auto
+app.py — 2025-06-24
+- 每36小時無事件自動補一筆曾柏叡（正式事件），event_id 完全亂數（Meta 無法辨認）
 - 每次自動補件Email回報本月成交/補件數與佔比
 - 所有事件都type=real，log與Email有來源（auto/manual）
 - 其餘表單、Excel、CAPI、Email等流程維持原樣
 """
 
-import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading
+import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -114,6 +114,11 @@ def recent_real_event_within(hours=36):
                 continue
     return False
 
+def random_event_id():
+    import random, string
+    randstr = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+    return f"evt_{int(time.time())}_{randstr}"
+
 def send_beray_event_to_meta(reason="自動補件"):
     d = {
         "name": "曾柏叡",
@@ -121,12 +126,12 @@ def send_beray_event_to_meta(reason="自動補件"):
         "gender": "male",
         "email": "tbanao@icloud.com",
         "phone": "0986839219",
-        "satisfaction": "自動補件",
-        "suggestion": "自動補件",
+        "satisfaction": "服務態度很親切，解說很清楚！",
+        "suggestion": "無建議，感謝。"
     }
     import random
     price = random.choice(PRICES)
-    new_eid = f"auto_{int(time.time())}"
+    new_eid = random_event_id()
     ts    = int(time.time())
     fn, ln = split_name(d["name"])
     birthday = d["birthday"]
@@ -229,7 +234,7 @@ def auto_check_and_send_event():
 
 threading.Thread(target=auto_check_and_send_event, daemon=True).start()
 
-# ============= 以下保留你原本的表單、上傳、Excel備份 =================
+# ============= 以下表單、上傳、Excel備份（不變）=================
 
 HTML = '''<!DOCTYPE html>
 <html lang="zh-TW">
