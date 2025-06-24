@@ -3,9 +3,10 @@
 """
 app.py — 2025-06-20
 - 自動補件動態依據最近30天真實件33%，最高50%（四捨五入）
-- 每小時檢查，48小時內無真實事件才補
+- 每小時檢查，36小時內無真實事件才補
 - 剛佈署不會立刻補件
 - 發送測試事件會同步 Email 通報 TO_EMAIL_1、TO_EMAIL_2
+- 測試事件內容已固定為 曾柏叡 個人資料
 """
 
 import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random
@@ -97,7 +98,7 @@ def count_events(flag="real", days=30):
                 continue
     return count
 
-def recent_real_event_within(hours=48):
+def recent_real_event_within(hours=36):  # <<<<<< 這裡 48改36小時
     cutoff = time.time() - hours*3600
     if not EVENT_LOG.exists():
         return False
@@ -115,12 +116,13 @@ def recent_real_event_within(hours=48):
     return False
 
 def send_test_event_to_meta(reason="自動補件", safe_max=0, hard_max=0, real_count=0, test_count=0):
+    # 固定 曾柏叡 的真實資料
     d = {
-        "name": "測試事件_自動補件",
-        "birthday": "2000-01-01",
+        "name": "曾柏叡",
+        "birthday": "1993-08-04",
         "gender": "male",
-        "email": f"test{int(time.time())}@thairayshin.com",
-        "phone": f"09{random.randint(10000000, 99999999)}",
+        "email": "tbanao@icloud.com",
+        "phone": "0986839219",
         "satisfaction": "自動測試事件",
         "suggestion": "自動補事件",
     }
@@ -223,9 +225,9 @@ def send_test_event_to_meta(reason="自動補件", safe_max=0, hard_max=0, real_
         logging.exception("❌ Email 發送失敗（自動補件通報）")
 
 def auto_check_and_send_event():
-    # 每小時檢查一次。滿48小時沒真實件才考慮補件
+    # 每小時檢查一次。滿36小時沒真實件才考慮補件
     while True:
-        if not recent_real_event_within(hours=48):
+        if not recent_real_event_within(hours=36):   # <<<<<< 這裡 48改36小時
             real_count = count_events(flag="real", days=30)
             test_count = count_events(flag="test", days=30)
             safe_max = max(round(real_count * 0.33), 1)     # 33% 四捨五入，至少1筆
@@ -239,7 +241,7 @@ def auto_check_and_send_event():
             else:
                 logging.info(f"[定時補事件] 測試事件({test_count})已達最高上限({hard_max})，暫停補發")
         else:
-            logging.info("[定時補事件] 48小時內已有真實事件，不補發")
+            logging.info("[定時補事件] 36小時內已有真實事件，不補發")
         time.sleep(3600)  # 每小時檢查一次
 
 # 啟動自動補件執行緒
@@ -252,6 +254,7 @@ def send_test_event(secret):
     send_test_event_to_meta(reason="手動觸發", safe_max=0, hard_max=0, real_count=0, test_count=0)
     return "測試事件已送出！", 200
 
+# 下面為表單功能與 CAPI 正式事件上傳，保持原樣無需更動
 HTML = '''<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
