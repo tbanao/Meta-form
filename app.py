@@ -8,6 +8,7 @@ app.py — 2025-06-27
 • 若姓名存在必回傳，否則用 fn+ln 或其他識別
 • 自動補件 Email 顯示 name / em / ph
 • fn / ln / 其他欄位完整雜湊上傳
+• pickle.load 都有 EOFError 防呆，啟動 thread 不會炸
 """
 
 import os, re, time, json, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random
@@ -119,9 +120,11 @@ def recent_real_event_within(hours=36) -> bool:
 
 # ─────────────────── 補件候選抽取 ─────────────────── #
 def get_random_user_profile(exclude_key: str | None = None):
-    # 第一次啟動時以 "a+b" 建檔，防止 FileNotFoundError
     with locked(USER_PROFILE_MAP_PATH, "a+b") as f:
-        mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
+        try:
+            mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
+        except EOFError:
+            mp = {}
     candidates = [
         (k, u) for k, u in mp.items()
         if (
@@ -171,7 +174,10 @@ def send_auto_event(reason="隨機 32-38 小時自動補件"):
 
     # 更新 user_profile_map.pkl
     with locked(USER_PROFILE_MAP_PATH, "a+b") as f:
-        mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
+        try:
+            mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
+        except EOFError:
+            mp = {}
         mp[key]["event_id"] = eid_purchase
         mp[key]["value"]    = price
         f.seek(0)
@@ -422,7 +428,10 @@ def submit():
 
     # 更新 user_profile_map.pkl
     with locked(USER_PROFILE_MAP_PATH, "a+b") as f:
-        mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
+        try:
+            mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
+        except EOFError:
+            mp = {}
         f.seek(0)
 
         keys = []
