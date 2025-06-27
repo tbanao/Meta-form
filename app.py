@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 2025-06-27（補件最安全真實版本）
-- 每36小時無事件自動補一筆現有客戶（不連續同一人，event_id/金額隨機，em、ph、ge、生日即可）
-- 所有補件、真實事件都 type=real，log有 auto/manual
+app.py — 2025-06-27（隨機補件＋通知補件用戶資訊）
+- 每 32~38 小時隨機時間無事件自動補一筆現有客戶（不連續同一人，event_id/金額隨機）
+- 補件 email 通知會顯示「本次補件用戶」姓名，若無姓名則顯示 email，否則顯示手機
+- 所有補件、真實事件都 type=real，log 有 auto/manual
 """
 
-import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, uuid
+import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, uuid, random
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,6 @@ import requests
 from flask import Flask, request, render_template_string, redirect, session, make_response
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
-import random
 
 REQUIRED = [
     "PIXEL_ID", "ACCESS_TOKEN",
@@ -155,6 +155,17 @@ def get_random_user_profile(exclude_key=None):
     else:
         return None, None
 
+def user_display_name(user):
+    # 補件 Email 通知用，優先姓名，再 email，再手機
+    name = (user.get("name") or "").strip()
+    if name:
+        return name
+    if user.get("em"):
+        return user.get("em")
+    if user.get("ph"):
+        return user.get("ph")
+    return "(未知)"
+
 def send_random_user_event_to_meta(reason="自動補件"):
     last_key = read_last_auto_key()
     key, user = get_random_user_profile(exclude_key=last_key)
@@ -224,10 +235,11 @@ def send_random_user_event_to_meta(reason="自動補件"):
         real_total, auto_count = count_events_auto_manual(30)
         ratio = f"{(auto_count/real_total*100):.1f}%" if real_total else "0%"
         now = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+        user_info = user_display_name(user)
         body = f"""【Meta 自動補件通報】
 通報時間：{now}
 自動補件原因：{reason}
-本次補件用戶：{user.get("name",'')}
+本次補件用戶：{user_info}
 本次補件 event_id：{eid}
 補件金額：NT${price:,}
 近 30 天所有事件數：{real_total}
@@ -248,14 +260,21 @@ def send_random_user_event_to_meta(reason="自動補件"):
     except Exception:
         logging.exception("❌ Email 發送失敗（自動補件通報）")
 
+def next_auto_time_range():
+    # 隨機 32～38 小時（單位：秒）
+    return random.randint(32*3600, 38*3600)
+
 def auto_check_and_send_event():
     while True:
         if not recent_real_event_within(hours=36):
             logging.info("[自動補件] 36小時內無事件，自動補件")
-            send_random_user_event_to_meta(reason="36小時自動補件")
+            send_random_user_event_to_meta(reason="隨機 32~38 小時自動補件")
+            sleep_sec = next_auto_time_range()
+            logging.info(f"[自動補件] 下次補件時間：{sleep_sec/3600:.2f} 小時後")
+            time.sleep(sleep_sec)
         else:
-            logging.info("[自動補件] 36小時內已有事件，不補發")
-        time.sleep(3600)
+            logging.info("[自動補件] 36小時內已有事件，不補發，1小時後再檢查")
+            time.sleep(3600)
 
 threading.Thread(target=auto_check_and_send_event, daemon=True).start()
 
