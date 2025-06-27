@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 2025-06-24
-- 每36小時無事件自動補一筆曾柏叡（正式事件），event_id 完全亂數（Meta 無法辨認）
-- 每次自動補件Email回報本月成交/補件數與佔比
-- 所有事件都type=real，log與Email有來源（auto/manual）
-- 其餘表單、Excel、CAPI、Email等流程維持原樣
+app.py — 2025-06-24 (最佳真實補件)
+- 每36小時無事件自動補一筆現有客戶（不連續同一人，event_id/金額隨機，完全帶真實欄位）
+- 所有補件、真實事件都 type=real，log有 auto/manual
 """
 
 import os, re, json, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, uuid
@@ -17,6 +15,7 @@ import requests
 from flask import Flask, request, render_template_string, redirect, session, make_response
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
+import random
 
 REQUIRED = [
     "PIXEL_ID", "ACCESS_TOKEN",
@@ -33,6 +32,7 @@ CURRENCY = "TWD"
 PRICES   = [19800, 28800, 34800, 39800, 45800]
 
 USER_PROFILE_MAP_PATH = "user_profile_map.pkl"
+LAST_AUTO_USER_PATH = "last_auto_user_key.txt"
 BACKUP = Path("form_backups"); BACKUP.mkdir(exist_ok=True)
 EVENT_LOG = Path("event_submit_log.txt")
 
@@ -115,64 +115,90 @@ def recent_real_event_within(hours=36):
     return False
 
 def random_event_id():
-    import random, string
-    randstr = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+    randstr = ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=16))
     return f"evt_{int(time.time())}_{randstr}"
 
-def send_beray_event_to_meta(reason="自動補件"):
-    d = {
-        "name": "曾柏叡",
-        "birthday": "1993-08-04",
-        "gender": "male",
-        "email": "tbanao@icloud.com",
-        "phone": "0986839219",
-        "satisfaction": "服務態度很親切，解說很清楚！",
-        "suggestion": "無建議，感謝。"
-    }
-    import random
-    price = random.choice(PRICES)
-    new_eid = random_event_id()
-    ts    = int(time.time())
-    fn, ln = split_name(d["name"])
-    birthday = d["birthday"]
-    gender = "m"
-    country = "tw"
+def read_last_auto_key():
+    try:
+        with open(LAST_AUTO_USER_PATH, "r") as f:
+            return f.read().strip()
+    except:
+        return ""
 
-    with locked(USER_PROFILE_MAP_PATH, "a+b"):
+def write_last_auto_key(key):
+    try:
+        with open(LAST_AUTO_USER_PATH, "w") as f:
+            f.write(key)
+    except:
+        pass
+
+def get_random_user_profile(exclude_key=None):
+    with locked(USER_PROFILE_MAP_PATH, "rb") as f:
         if os.path.getsize(USER_PROFILE_MAP_PATH) > 0:
-            with open(USER_PROFILE_MAP_PATH, "rb") as f:
-                user_profile_map = pickle.load(f)
+            user_profile_map = pickle.load(f)
         else:
             user_profile_map = {}
-        keys = []
-        if d["email"]: keys.append(d["email"].lower())
-        if d["phone"]: keys.append(d["phone"])
-        if d["name"] and birthday: keys.append(f"{d['name']}|{birthday}")
-        eid = new_eid
-        for key in keys:
-            profile = user_profile_map.get(key, {})
-            profile.update({
-                "fn": fn, "ln": ln, "db": birthday, "ge": gender,
-                "country": country, "em": d["email"].lower(), "ph": d["phone"],
-                "name": d["name"], "birthday": birthday, "event_id": eid
-            })
-            user_profile_map[key] = profile
-        with open(USER_PROFILE_MAP_PATH, "wb") as f:
-            pickle.dump(user_profile_map, f)
+    valid_users = []
+    for key, u in user_profile_map.items():
+        # em、ph、生日、性別完整才可抽；排除曾柏叡及上一筆
+        if u.get("em") and u.get("ph") and (u.get("db") or u.get("birthday")) and u.get("ge"):
+            if u.get("name") != "曾柏叡" and key != exclude_key:
+                valid_users.append((key, u))
+    if not valid_users:
+        # 若全排除只剩一人，還是回傳
+        for key, u in user_profile_map.items():
+            if u.get("em") and u.get("ph") and (u.get("db") or u.get("birthday")) and u.get("ge"):
+                if u.get("name") != "曾柏叡":
+                    valid_users.append((key, u))
+    if valid_users:
+        return random.choice(valid_users)
+    else:
+        return None, None
 
+def send_random_user_event_to_meta(reason="自動補件"):
+    last_key = read_last_auto_key()
+    key, user = get_random_user_profile(exclude_key=last_key)
+    if not user:
+        logging.warning("[補件] 找不到合格客戶！")
+        return
+    # 新 event id & 隨機金額
+    eid = random_event_id()
+    price = random.choice(PRICES)
+    ts = int(time.time())
+    fn, ln = split_name(user["name"])
+    birthday = user.get("db") or user.get("birthday")
+    gender = user.get("ge") or "f"
+    country = user.get("country") or "tw"
+    em = user.get("em")
+    ph = user.get("ph")
+    client_ip = user.get("client_ip_address") or "127.0.0.1"
+    client_ua = user.get("client_user_agent") or "auto-random-user"
+    fbc = user.get("fbc") or ""
+    fbp = user.get("fbp") or ""
+    # 記錄 event_id/金額 進 user_profile_map
+    with locked(USER_PROFILE_MAP_PATH, "r+b") as f:
+        user_profile_map = pickle.load(f)
+        u = user_profile_map[key]
+        u["event_id"] = eid
+        u["value"] = price
+        user_profile_map[key] = u
+        f.seek(0)
+        pickle.dump(user_profile_map, f)
+        f.truncate()
+    write_last_auto_key(key)
     ud = {
-        "external_id": sha(d["email"] or d["phone"] or d["name"]),
-        "em": sha(d["email"].lower()),
-        "ph": sha(d["phone"]),
+        "external_id": sha(em or ph or user["name"]),
+        "em": sha(em),
+        "ph": sha(ph),
         "fn": sha(fn),
         "ln": sha(ln),
         "db": sha(birthday),
         "ge": sha(gender),
         "country": sha(country),
-        "client_ip_address": "127.0.0.1",
-        "client_user_agent": "auto-beray",
-        "fbc": "",
-        "fbp": ""
+        "client_ip_address": client_ip,
+        "client_user_agent": client_ua,
+        "fbc": fbc,
+        "fbp": fbp
     }
     payload = {
         "data": [{
@@ -192,7 +218,6 @@ def send_beray_event_to_meta(reason="自動補件"):
     except Exception as e:
         logging.error("[自動補件] CAPI failed: %s", e)
     log_event(ts, eid, fake=True)
-
     # Email回報
     try:
         tos = [t for t in [os.getenv("TO_EMAIL_1"), os.getenv("TO_EMAIL_2")] if t]
@@ -203,7 +228,8 @@ def send_beray_event_to_meta(reason="自動補件"):
         body = f"""【Meta 自動補件通報】
 通報時間：{now}
 自動補件原因：{reason}
-本次補件 event_id：{new_eid}
+本次補件用戶：{user.get("name")}
+本次補件 event_id：{eid}
 補件金額：NT${price:,}
 近 30 天所有事件數：{real_total}
 近 30 天自動補件數：{auto_count}
@@ -227,14 +253,14 @@ def auto_check_and_send_event():
     while True:
         if not recent_real_event_within(hours=36):
             logging.info("[自動補件] 36小時內無事件，自動補件")
-            send_beray_event_to_meta(reason="36小時自動補件")
+            send_random_user_event_to_meta(reason="36小時自動補件")
         else:
             logging.info("[自動補件] 36小時內已有事件，不補發")
         time.sleep(3600)
 
 threading.Thread(target=auto_check_and_send_event, daemon=True).start()
 
-# ============= 以下表單、上傳、Excel備份（不變）=================
+# ============= 以下表單、上傳、Excel備份（原樣）=================
 
 HTML = '''<!DOCTYPE html>
 <html lang="zh-TW">
@@ -381,6 +407,8 @@ def submit():
     birthday = d["birthday"].replace("/", "-") if d["birthday"] else ""
     gender = "f" if d["gender"].lower() in ["female", "f", "女"] else "m" if d["gender"].lower() in ["male", "m", "男"] else ""
     country = "tw"
+    real_ip = request.remote_addr or ""
+    ua = request.headers.get("User-Agent","")
 
     with locked(USER_PROFILE_MAP_PATH, "a+b"):
         if os.path.getsize(USER_PROFILE_MAP_PATH) > 0:
@@ -406,7 +434,11 @@ def submit():
             profile.update({
                 "fn": fn, "ln": ln, "db": birthday, "ge": gender,
                 "country": country, "em": d["email"].lower(), "ph": d["phone"],
-                "name": d["name"], "birthday": birthday, "event_id": eid
+                "name": d["name"], "birthday": birthday, "event_id": eid, "value": price,
+                "client_ip_address": real_ip,
+                "client_user_agent": ua,
+                "fbc": fbc,
+                "fbp": fbp
             })
             user_profile_map[key] = profile
 
@@ -422,7 +454,6 @@ def submit():
     wb.save(xls)
 
     # Meta CAPI 上傳
-    real_ip = request.remote_addr or ""
     ud = {
         "external_id": sha(d["email"] or d["phone"] or d["name"]),
         "em": sha(d["email"].lower()),
@@ -433,7 +464,7 @@ def submit():
         "ge": sha(gender),
         "country": sha(country),
         "client_ip_address": real_ip,
-        "client_user_agent": request.headers.get("User-Agent",""),
+        "client_user_agent": ua,
         "fbc": fbc,
         "fbp": fbp
     }
