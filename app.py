@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 2025-06-24 (最佳真實補件)
-- 每36小時無事件自動補一筆現有客戶（不連續同一人，event_id/金額隨機，完全帶真實欄位）
+app.py — 2025-06-27（補件最安全真實版本）
+- 每36小時無事件自動補一筆現有客戶（不連續同一人，event_id/金額隨機，em、ph、ge、生日即可）
 - 所有補件、真實事件都 type=real，log有 auto/manual
 """
 
@@ -65,7 +65,7 @@ def csrf():
     return session["csrf"]
 
 def split_name(name):
-    name = name.strip()
+    name = (name or "").strip()
     if len(name) >= 2:
         return name[0], name[1:]
     elif name:
@@ -140,15 +140,15 @@ def get_random_user_profile(exclude_key=None):
             user_profile_map = {}
     valid_users = []
     for key, u in user_profile_map.items():
-        # em、ph、生日、性別完整才可抽；排除曾柏叡及上一筆
-        if u.get("em") and u.get("ph") and (u.get("db") or u.get("birthday")) and u.get("ge"):
-            if u.get("name") != "曾柏叡" and key != exclude_key:
+        # 只檢查 em、ph、ge（性別）、db/生日；姓名可空，排除曾柏叡與上一筆
+        if u.get("em") and u.get("ph") and u.get("ge") and (u.get("db") or u.get("birthday")):
+            if u.get("name", "") != "曾柏叡" and key != exclude_key:
                 valid_users.append((key, u))
     if not valid_users:
         # 若全排除只剩一人，還是回傳
         for key, u in user_profile_map.items():
-            if u.get("em") and u.get("ph") and (u.get("db") or u.get("birthday")) and u.get("ge"):
-                if u.get("name") != "曾柏叡":
+            if u.get("em") and u.get("ph") and u.get("ge") and (u.get("db") or u.get("birthday")):
+                if u.get("name", "") != "曾柏叡":
                     valid_users.append((key, u))
     if valid_users:
         return random.choice(valid_users)
@@ -161,11 +161,10 @@ def send_random_user_event_to_meta(reason="自動補件"):
     if not user:
         logging.warning("[補件] 找不到合格客戶！")
         return
-    # 新 event id & 隨機金額
     eid = random_event_id()
     price = random.choice(PRICES)
     ts = int(time.time())
-    fn, ln = split_name(user["name"])
+    fn, ln = split_name(user.get("name", ""))
     birthday = user.get("db") or user.get("birthday")
     gender = user.get("ge") or "f"
     country = user.get("country") or "tw"
@@ -187,7 +186,7 @@ def send_random_user_event_to_meta(reason="自動補件"):
         f.truncate()
     write_last_auto_key(key)
     ud = {
-        "external_id": sha(em or ph or user["name"]),
+        "external_id": sha(em or ph or user.get("name", "")),
         "em": sha(em),
         "ph": sha(ph),
         "fn": sha(fn),
@@ -228,7 +227,7 @@ def send_random_user_event_to_meta(reason="自動補件"):
         body = f"""【Meta 自動補件通報】
 通報時間：{now}
 自動補件原因：{reason}
-本次補件用戶：{user.get("name")}
+本次補件用戶：{user.get("name",'')}
 本次補件 event_id：{eid}
 補件金額：NT${price:,}
 近 30 天所有事件數：{real_total}
