@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 2025-06-27
+app.py — 2025-06-28
 --------------------------------------------------
-• 補件候選必須同時具備 em / ph / birthday / gender
-• 補件時連送 PageView/Purchase 串流量，且 user_data 帶真實 fbc,fbp,ip,ua
-• 若姓名存在必回傳，否則用 fn+ln 或其他識別
-• 自動補件 Email 顯示 name / em / ph
-• fn / ln / 其他欄位完整雜湊上傳
-• pickle.load 都有 EOFError 防呆，啟動 thread 不會炸
+• 補件候選: 只要 em 或 ph 有值
+• 每月同一筆只補件一次（下月重置）
+• 新成交自動寫進 user_profile_map
+• 補件時全部欄位都上傳（沒填就空字串）
+• 滿意度調查表 Flask 表單一併寫入 user_profile_map
 """
 
 import os, re, time, json, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random
@@ -22,7 +21,6 @@ from flask import Flask, request, render_template_string, redirect, session, mak
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-# ─────────────────────── 基本設定 ─────────────────────── #
 REQUIRED = [
     "PIXEL_ID", "ACCESS_TOKEN",
     "FROM_EMAIL", "EMAIL_PASSWORD",
@@ -41,9 +39,9 @@ CURRENCY = "TWD"
 PRICES   = [19800, 28800, 34800, 39800, 45800]
 
 USER_PROFILE_MAP_PATH = "user_profile_map.pkl"
-LAST_AUTO_USER_PATH   = "last_auto_user_key.txt"
 BACKUP  = Path("form_backups"); BACKUP.mkdir(exist_ok=True)
 EVENT_LOG = Path("event_submit_log.txt")
+AUTO_USED_PATH = "auto_used.pkl"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,10 +57,8 @@ HSTS = "max-age=63072000; includeSubDomains; preload"
 sha  = lambda s: hashlib.sha256(s.encode()).hexdigest() if s else ""
 norm_phone = lambda p: ("886"+re.sub(r"[^\d]","",p).lstrip("0")) if p.startswith("09") else re.sub(r"[^\d]","",p)
 
-# ─────────────────────── 工具函式 ─────────────────────── #
 @contextmanager
 def locked(path, mode):
-    """以檔案鎖確保多執行緒／多進程安全存取 pickle 檔"""
     with open(path, mode) as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         yield f
@@ -73,22 +69,22 @@ def csrf():
         session["csrf"] = hashlib.md5(os.urandom(16)).hexdigest()
     return session["csrf"]
 
-DOUBLE_SURNAMES = {
-    '歐陽','司馬','上官','夏侯','諸葛','聞人','東方','赫連','皇甫','尉遲','羊舌',
-    '淳于','公孫','仲孫','單于','令狐','鐘離','宇文','長孫','慕容','鮮于','拓跋',
-    '軒轅','百里','東郭','南宮','西門','北宮','呼延','梁丘','左丘','第五','太史'
-}
 def split_name(name: str):
+    DOUBLE_SURNAMES = {
+        '歐陽','司馬','上官','夏侯','諸葛','聞人','東方','赫連','皇甫','尉遲','羊舌',
+        '淳于','公孫','仲孫','單于','令狐','鐘離','宇文','長孫','慕容','鮮于','拓跋',
+        '軒轅','百里','東郭','南宮','西門','北宮','呼延','梁丘','左丘','第五','太史'
+    }
     if not name:
         return "", ""
     s = name.strip()
-    if " " in s or "," in s:  # 英文姓名
+    if " " in s or "," in s:
         s = s.replace(",", " ")
         parts = [p for p in s.split() if p]
         return (parts[0], " ".join(parts[1:])) if len(parts) > 1 else ("", parts[0])
-    if len(s) >= 3 and s[:2] in DOUBLE_SURNAMES:  # 中文複姓
+    if len(s) >= 3 and s[:2] in DOUBLE_SURNAMES:
         return s[:2], s[2:]
-    if len(s) >= 2:                               # 中文單姓
+    if len(s) >= 2:
         return s[0], s[1:]
     return s, ""
 
@@ -118,138 +114,104 @@ def recent_real_event_within(hours=36) -> bool:
                 continue
     return False
 
-# ─────────────────── 補件候選抽取 ─────────────────── #
-def get_random_user_profile(exclude_key: str | None = None):
-    with locked(USER_PROFILE_MAP_PATH, "a+b") as f:
-        try:
-            mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
-        except EOFError:
-            mp = {}
-    candidates = [
-        (k, u) for k, u in mp.items()
-        if (
-            u.get("em") and u.get("ph") and
-            (u.get("db") or u.get("birthday")) and
-            u.get("ge") and
-            u.get("client_ip_address") and
-            u.get("client_user_agent") and
-            u.get("fbc") is not None and u.get("fbp") is not None and
-            u.get("name", "") != "曾柏叡" and
-            k != exclude_key
-        )
-    ]
-    return random.choice(candidates) if candidates else (None, None)
+def get_auto_used():
+    if os.path.exists(AUTO_USED_PATH):
+        with open(AUTO_USED_PATH, "rb") as f:
+            used = pickle.load(f)
+    else:
+        used = {}
+    # 新月自動清空
+    now = datetime.now()
+    cur_yyyymm = now.strftime("%Y%m")
+    if used.get("yyyymm") != cur_yyyymm:
+        used = {"yyyymm": cur_yyyymm, "used": set()}
+    return used
 
-def random_event_id() -> str:
+def set_auto_used(key):
+    used = get_auto_used()
+    used["used"].add(key)
+    with open(AUTO_USED_PATH, "wb") as f:
+        pickle.dump(used, f)
+
+def get_random_user_profile():
+    used = get_auto_used()
+    with locked(USER_PROFILE_MAP_PATH, "a+b") as f:
+        mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
+    pool = []
+    for k, u in mp.items():
+        if k in used["used"]:
+            continue
+        if u.get("em") or u.get("ph"):
+            pool.append((k, u))
+    return random.choice(pool) if pool else (None, None)
+
+def random_event_id():
     return f"evt_{int(time.time())}_{''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=16))}"
 
-def read_last_auto_key() -> str:
-    try:
-        return open(LAST_AUTO_USER_PATH).read().strip()
-    except FileNotFoundError:
-        return ""
-
-def write_last_auto_key(k: str):
-    try:
-        with open(LAST_AUTO_USER_PATH, "w") as f:
-            f.write(k)
-    except:  # pragma: no cover
-        pass
-
-def send_auto_event(reason="隨機 32-38 小時自動補件"):
-    last_key = read_last_auto_key()
-    key, u   = get_random_user_profile(exclude_key=last_key)
+def send_auto_event(reason="隨機補件"):
+    k, u = get_random_user_profile()
     if not u:
-        logging.warning("[補件] 找不到合格客戶！")
+        logging.warning("[補件] 沒有可抽的補件對象（本月都抽過了）")
         return
 
-    eid_purchase = random_event_id()
-    eid_pageview = random_event_id()
-    price        = random.choice(PRICES)
-    ts_now       = int(time.time())
-    pageview_time = ts_now - random.randint(30, 300)  # PageView 提前 30~300 秒
-
-    fn, ln = split_name(u.get("name") or (u.get("fn", "") + u.get("ln", "")))
+    eid = random_event_id()
+    price = random.choice(PRICES)
+    ts = int(time.time())
+    fn, ln = split_name(u.get("name", "") or (u.get("fn", "") + u.get("ln", "")))
     name_disp = user_display_name(u)
-
-    # 更新 user_profile_map.pkl
+    set_auto_used(k)
     with locked(USER_PROFILE_MAP_PATH, "a+b") as f:
-        try:
-            mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
-        except EOFError:
-            mp = {}
-        mp[key]["event_id"] = eid_purchase
-        mp[key]["value"]    = price
+        mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
+        mp[k]["event_id"] = eid
+        mp[k]["value"] = price
         f.seek(0)
         pickle.dump(mp, f)
         f.truncate()
 
-    write_last_auto_key(key)
+    ud = {}
+    for field in [
+        "em","ph","fn","ln","db","birthday","ge","country","name",
+        "client_ip_address","client_user_agent","fbc","fbp"
+    ]:
+        v = u.get(field, "")
+        if field in ("em", "ph", "fn", "ln", "db", "ge", "country"):
+            ud[field] = sha(v)
+        else:
+            ud[field] = v
+    ud["external_id"] = sha(u.get("em") or u.get("ph") or name_disp)
 
-    ud = {
-        "external_id": sha(u.get("em") or u.get("ph") or name_disp),
-        "em": sha(u["em"]), "ph": sha(u["ph"]),
-        "fn": sha(fn), "ln": sha(ln),
-        "db": sha(u.get("db") or u.get("birthday")),
-        "ge": sha(u["ge"]), "country": sha(u.get("country") or "tw"),
-        "client_ip_address": u.get("client_ip_address"),
-        "client_user_agent": u.get("client_user_agent"),
-        "fbc": u.get("fbc", ""), "fbp": u.get("fbp", "")
-    }
-    # 1. 先補 PageView
-    pageview_payload = {
-        "data": [{
-            "event_name": "PageView",
-            "event_time": pageview_time,
-            "event_id": eid_pageview,
-            "action_source": "website",
-            "user_data": ud,
-            "custom_data": {}
-        }],
-        "upload_tag": f"auto_{datetime.utcfromtimestamp(pageview_time).strftime('%Y%m%d_%H%M%S')}"
-    }
-    try:
-        r = requests.post(API_URL, json=pageview_payload, params={"access_token": TOKEN}, timeout=10)
-        logging.info("[自動補件] PageView %s → %s", r.status_code, r.text)
-        r.raise_for_status()
-    except Exception as e:
-        logging.error("[自動補件] PageView failed: %s", e)
-
-    # 2. 再補 Purchase
-    purchase_payload = {
+    payload = {
         "data": [{
             "event_name": "Purchase",
-            "event_time": ts_now,
-            "event_id": eid_purchase,
+            "event_time": ts,
+            "event_id": eid,
             "action_source": "website",
             "user_data": ud,
             "custom_data": {"currency": CURRENCY, "value": price}
         }],
-        "upload_tag": f"auto_{datetime.utcfromtimestamp(ts_now).strftime('%Y%m%d_%H%M%S')}"
+        "upload_tag": f"auto_{datetime.utcfromtimestamp(ts).strftime('%Y%m%d_%H%M%S')}"
     }
     try:
-        r = requests.post(API_URL, json=purchase_payload, params={"access_token": TOKEN}, timeout=10)
-        logging.info("[自動補件] Purchase %s → %s", r.status_code, r.text)
+        r = requests.post(API_URL, json=payload, params={"access_token": TOKEN}, timeout=10)
+        logging.info("[自動補件] Meta CAPI %s → %s", r.status_code, r.text)
         r.raise_for_status()
     except Exception as e:
-        logging.error("[自動補件] Purchase failed: %s", e)
+        logging.error("[自動補件] CAPI failed: %s", e)
 
-    log_event(ts_now, eid_purchase, fake=True)
-
-    # Email 通報
+    log_event(ts, eid, fake=True)
     try:
         tos = [os.getenv("TO_EMAIL_1"), os.getenv("TO_EMAIL_2")]
         tos = [t for t in tos if t]
         body = f"""【Meta 自動補件通報】
-通報時間：{datetime.utcfromtimestamp(ts_now).strftime('%Y-%m-%d %H:%M:%S')}
+通報時間：{datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')}
 自動補件原因：{reason}
 
 【補件客戶資訊】
 姓名　：{name_disp}
-Email ：{u['em']}
-電話　：{u['ph']}
+Email ：{u.get('em','')}
+電話　：{u.get('ph','')}
 
-Event ID：{eid_purchase}
+Event ID：{eid}
 補件金額：NT${price:,}
 
 【備註】此信為自動通知，請勿回覆。
@@ -266,7 +228,7 @@ Event ID：{eid_purchase}
     except Exception:
         logging.exception("❌ Auto-email 發送失敗")
 
-def next_auto_interval() -> int:
+def next_auto_interval():
     return random.randint(32 * 3600, 38 * 3600)
 
 def auto_loop():
@@ -285,7 +247,8 @@ def auto_loop():
 
 threading.Thread(target=auto_loop, daemon=True).start()
 
-# ─────────────────────── HTML 模板 ─────────────────────── #
+# --------- Flask 前端 & 表單 ---------
+
 HTML = '''<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
@@ -378,7 +341,6 @@ HTML = '''<!DOCTYPE html>
 </body>
 </html>'''
 
-# ─────────────────────── Flask 路由 ─────────────────────── #
 @app.before_request
 def https_redirect():
     if request.headers.get("X-Forwarded-Proto", "http") != "https":
@@ -404,7 +366,6 @@ def index():
         CURRENCY=CURRENCY
     )
 
-# ─────────────────────── 表單提交 ─────────────────────── #
 @app.route('/submit', methods=['POST'])
 def submit():
     if request.form.get("csrf_token") != session.get("csrf"):
@@ -426,21 +387,14 @@ def submit():
     real_ip  = request.remote_addr or ""
     ua       = request.headers.get("User-Agent", "")
 
-    # 更新 user_profile_map.pkl
     with locked(USER_PROFILE_MAP_PATH, "a+b") as f:
-        try:
-            mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
-        except EOFError:
-            mp = {}
+        mp = pickle.load(f) if os.path.getsize(USER_PROFILE_MAP_PATH) else {}
         f.seek(0)
-
         keys = []
         if d["email"]: keys.append(d["email"].lower())
         if d["phone"]: keys.append(d["phone"])
         if d["name"] and birthday: keys.append(f"{d['name']}|{birthday}")
-
         eid = next((mp.get(k, {}).get("event_id") for k in keys if k in mp), None) or new_eid
-
         for k in keys:
             u = mp.get(k, {})
             u.update({
@@ -450,15 +404,15 @@ def submit():
                 "name": d["name"], "birthday": birthday,
                 "event_id": eid, "value": price,
                 "client_ip_address": real_ip, "client_user_agent": ua,
-                "fbc": fbc, "fbp": fbp
+                "fbc": fbc, "fbp": fbp,
+                "satisfaction": d.get("satisfaction", ""),
+                "suggestion": d.get("suggestion", "")
             })
             mp[k] = u
-
         pickle.dump(mp, f)
         f.truncate()
         logging.info("user_profile_map.pkl updated (%s)", ", ".join(keys))
 
-    # Excel 備份
     xls = BACKUP / f"{d['name']}_{datetime.utcfromtimestamp(ts).strftime('%Y%m%d_%H%M%S')}.xlsx"
     wb  = Workbook()
     ws  = wb.active
@@ -466,15 +420,18 @@ def submit():
     ws.append(list(d.values()) + [price, datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')])
     wb.save(xls)
 
-    # 上傳 Meta CAPI
-    ud = {
-        "external_id": sha(d["email"] or d["phone"] or d["name"]),
-        "em": sha(d["email"].lower()), "ph": sha(d["phone"]),
-        "fn": sha(fn), "ln": sha(ln),
-        "db": sha(birthday), "ge": sha(gender), "country": sha(country),
-        "client_ip_address": real_ip, "client_user_agent": ua,
-        "fbc": fbc, "fbp": fbp
-    }
+    ud = {}
+    for field in [
+        "em","ph","fn","ln","db","birthday","ge","country","name",
+        "client_ip_address","client_user_agent","fbc","fbp"
+    ]:
+        v = locals().get(field) or d.get(field) or ""
+        if field in ("em", "ph", "fn", "ln", "db", "ge", "country"):
+            ud[field] = sha(v)
+        else:
+            ud[field] = v
+    ud["external_id"] = sha(d["email"] or d["phone"] or d["name"])
+
     payload = {
         "data": [{
             "event_name": "Purchase",
@@ -494,8 +451,6 @@ def submit():
         logging.error("CAPI upload failed → queued retry: %s", e)
 
     log_event(ts, eid, fake=False)
-
-    # Email 通知
     try:
         tos = [os.getenv("TO_EMAIL_1"), os.getenv("TO_EMAIL_2")]
         if not all(tos):
@@ -531,7 +486,6 @@ def submit():
 
     return make_response("感謝您的填寫！", 200)
 
-# ─────────────────────── 主程式入口 ─────────────────────── #
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     logging.info("Listening on %s", port)
