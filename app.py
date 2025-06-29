@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 2025-06-28 事件間隔32~38小時「最後一筆」倒數 + 全功能 + user_profile_map安全寫入
+app.py — 2025-06-28 thread每20分鐘檢查+真人送件時log補件剩餘時間
 """
 
 import os, re, time, json, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random, shutil
@@ -52,14 +52,12 @@ norm_phone = lambda p: ("886"+re.sub(r"[^\d]","",p).lstrip("0")) if p.startswith
 
 @contextmanager
 def locked(path, mode):
-    # a+b 可自動建立檔案，第一次寫入不會出錯
     with open(path, mode) as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         yield f
         fcntl.flock(f, fcntl.LOCK_UN)
 
 def load_user_map():
-    # 安全載入，永不報錯
     if not os.path.exists(USER_PROFILE_MAP_PATH) or os.path.getsize(USER_PROFILE_MAP_PATH)==0:
         return {}
     with locked(USER_PROFILE_MAP_PATH, "a+b") as f:
@@ -70,7 +68,6 @@ def load_user_map():
             return {}
 
 def save_user_map(mp):
-    # 安全寫入
     with locked(USER_PROFILE_MAP_PATH, "a+b") as f:
         f.seek(0)
         pickle.dump(mp, f)
@@ -81,7 +78,6 @@ def backup_map():
     if os.path.exists(USER_PROFILE_MAP_PATH):
         shutil.copy2(USER_PROFILE_MAP_PATH, BACKUP / f"user_profile_map_{now}.pkl")
 
-# ===== 拆名/CSRF/日誌 =====
 DOUBLE_SURNAMES = {'歐陽','司馬','上官','夏侯','諸葛','聞人','東方','赫連','皇甫','尉遲','羊舌','淳于','公孫','仲孫','單于','令狐','鐘離','宇文','長孫','慕容','鮮于','拓跋','軒轅','百里','東郭','南宮','西門','北宮','呼延','梁丘','左丘','第五','太史'}
 def split_name(name: str):
     if not name: return "",""
@@ -115,7 +111,6 @@ def recent_real_event_within(hours=36):
             if ",manual" in line: return True
     return False
 
-# ===== IPinfo 查城市/郵遞區號 =====
 def ip_lookup(ip):
     try:
         if not ip or ip.startswith("127.") or ip.startswith("192.168.") or ip.startswith("10."):
@@ -131,7 +126,6 @@ def ip_lookup(ip):
     except Exception as e:
         return {}, f"[IPinfo失敗]{ip}:{e}"
 
-# ===== 月度去重 & 補件抽取 =====
 def get_auto_used():
     if os.path.exists(AUTO_USED_PATH):
         with open(AUTO_USED_PATH,"rb") as f:
@@ -158,7 +152,6 @@ def pick_user():
     set_auto_used(k)
     return k,u
 
-# ===== CAPI 組裝 & 送出 =====
 def build_user_data(u, ext_id, ct_zip):
     dob = u.get("birthday","")
     y=m=d=""
@@ -286,20 +279,31 @@ def send_auto_event():
     except Exception as e:
         logging.error("[Auto] 補件失敗：%s", e)
 
+# ===== 改良自動補件 Thread，每20分鐘檢查一次 =====
+target_wait = None
 def auto_wake():
+    global target_wait
+    random.seed()
+    interval_sec = 20*60  # 20分鐘
+    wait_min = 32*3600
+    wait_max = 38*3600
+    target_wait = random.randint(wait_min, wait_max)
+    logging.info(f"[Auto] 本輪目標補件間隔：{target_wait//3600}小時")
     while True:
-        n = random.randint(32*3600, 38*3600)
         last_event = get_last_event_time()
         now = int(time.time())
-        wait = last_event + n - now
-        if wait > 0:
-            logging.info("下次自動補件預計剩 %s 秒", wait)
-            time.sleep(wait)
-        send_auto_event()
-# 啟動自動補件 thread
+        since_last = now - last_event
+        remain = target_wait - since_last
+        if remain <= 0:
+            send_auto_event()
+            target_wait = random.randint(wait_min, wait_max)
+            logging.info(f"[Auto] 新一輪目標補件間隔：{target_wait//3600}小時")
+        else:
+            logging.info(f"[Auto] 距離下次自動補件預計剩 {remain//3600} 小時 {remain%3600//60} 分")
+        time.sleep(interval_sec)
+
 threading.Thread(target=auto_wake, daemon=True).start()
 
-# ===== HTML表單頁 =====
 HTML = r'''<!DOCTYPE html>
 <html lang="zh-TW"><head><meta charset="UTF-8">
 <title>服務滿意度調查</title>
@@ -404,7 +408,6 @@ function send(e){
 </body>
 </html>'''
 
-# ===== Flask 路由 & 表單處理 =====
 @app.route('/healthz')
 @app.route('/health')
 def health():
@@ -427,7 +430,7 @@ def index():
 
 @app.route('/submit', methods=['POST'])
 def submit():
-    # CSRF 驗證
+    global target_wait
     if request.form.get("csrf_token") != session.get("csrf"):
         return "CSRF!", 400
 
@@ -445,7 +448,6 @@ def submit():
     ua        = request.headers.get("User-Agent","")
     ct_zip, iplog = ip_lookup(real_ip)
 
-    # 更新 user_profile_map 並備份
     mp = load_user_map()
     for k in filter(None, [
         d["email"].lower() if d["email"] else None,
@@ -470,14 +472,24 @@ def submit():
     backup_map()
     update_last_event_time()
 
-    # Excel 備份
+    # ===== 新增真人送件時log下次自動補件剩餘時間 =====
+    try:
+        last_event = get_last_event_time()
+        now = int(time.time())
+        wait = target_wait if target_wait is not None else 34*3600
+        since_last = now - last_event
+        remain = wait - since_last
+        remain = max(remain, 0)
+        logging.info(f"[Manual] 本次真人送件，下次自動補件預計剩 {remain//3600} 小時 {remain%3600//60} 分")
+    except Exception as e:
+        logging.error(f"[Manual] 計算補件倒數出錯：{e}")
+
     xls = BACKUP / f"{d['name']}_{datetime.utcfromtimestamp(ts):%Y%m%d_%H%M%S}.xlsx"
     wb  = Workbook(); ws = wb.active
     ws.append(list(d.keys()) + ["price","time"])
     ws.append(list(d.values()) + [price, datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")])
     wb.save(xls)
 
-    # CAPI user_data
     proto = {
         "fn":fn, "ln":ln,
         "em":d["email"].lower(), "ph":d["phone"],
@@ -488,7 +500,6 @@ def submit():
     }
     ud = build_user_data(proto, d["email"] or d["phone"] or d["name"], ct_zip)
 
-    # PageView + Purchase
     pv = {
         "event_name":"PageView",
         "event_time":ts - random.randint(60,300),
@@ -516,7 +527,6 @@ def submit():
 
     log_event(ts, eid, fake=False)
 
-    # Email 通知
     try:
         tos = [os.getenv("TO_EMAIL_1"), os.getenv("TO_EMAIL_2")]
         body = "\n".join([
@@ -540,7 +550,6 @@ def submit():
 
     return make_response("感謝您的填寫！", 200)
 
-# ===== 程式入口 =====
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     logging.info("Listening on %s", port)
