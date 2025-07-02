@@ -554,3 +554,43 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     logging.info("Listening on %s", port)
     app.run("0.0.0.0", port)
+
+from flask import send_from_directory, render_template_string
+
+@app.route('/download_map/<filename>')
+def download_map(filename):
+    if not filename.endswith(".pkl"):
+        return "Invalid file", 400
+    return send_from_directory(str(BACKUP), filename, as_attachment=True)
+
+@app.route('/list_backups')
+def list_backups():
+    try:
+        pkl_files = sorted([f for f in os.listdir(BACKUP) if f.endswith(".pkl")])
+        html = "<h2>📁 備份檔案下載列表（.pkl）</h2><ul>"
+        for f in pkl_files:
+            url = f"/download_map/{f}"
+            html += f'<li><a href="{url}">{f}</a></li>'
+        html += "</ul>"
+        return render_template_string(html)
+    except Exception as e:
+        return f"錯誤：{e}", 500
+
+@app.route('/list_excels')
+def list_excels():
+    try:
+        xls_files = sorted([f for f in os.listdir(BACKUP) if f.endswith(".xlsx")])
+        html = "<h2>📄 表單 Excel 檔案清單</h2><ul>"
+        for f in xls_files:
+            url = f"/download_excel/{f}"
+            html += f'<li><a href="{url}">{f}</a></li>'
+        html += "</ul>"
+        return render_template_string(html)
+    except Exception as e:
+        return f"錯誤：{e}", 500
+
+@app.route('/download_excel/<filename>')
+def download_excel(filename):
+    if not filename.endswith(".xlsx"):
+        return "Invalid file", 400
+    return send_from_directory(str(BACKUP), filename, as_attachment=True)
