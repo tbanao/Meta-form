@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 app.py — 2025-07-04
-完整版：填單、補件、user_profile_map正確回存、/list表格、下載PKL
+全功能、可直接部署、支援 /list、下載pkl，完全無 Flask/Markup import 問題
 """
 
 import os, re, time, json, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random, shutil
@@ -12,7 +12,8 @@ from pathlib import Path
 from email.message import EmailMessage
 
 import requests
-from flask import Flask, request, render_template_string, redirect, session, make_response, send_file, Markup
+from flask import Flask, request, render_template_string, redirect, session, make_response, send_file
+from markupsafe import Markup
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
 
