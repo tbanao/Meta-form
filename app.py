@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 2025-07-02
-修正：user_profile_map.pickle 使用 "wb" 覆蓋回存，人工/自動送件都送 MessageStart
-補件 thread 32~38小時觸發，表單備份與 email 通知全功能
+app.py — 2025-07-04
+完整版：填單、補件、user_profile_map正確回存、/list表格、下載PKL
 """
 
 import os, re, time, json, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random, shutil
@@ -13,7 +12,7 @@ from pathlib import Path
 from email.message import EmailMessage
 
 import requests
-from flask import Flask, request, render_template_string, redirect, session, make_response
+from flask import Flask, request, render_template_string, redirect, session, make_response, send_file, Markup
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -167,12 +166,12 @@ HTML = r'''<!DOCTYPE html>
 <html lang="zh-TW">
 <head><meta charset="UTF-8">
 <title>服務滿意度調查</title>
-<!-- 你可自訂 HTML 表單內容 -->
 </head>
 <body>
 <h2>服務滿意度調查表單</h2>
+<p>目前時間：{{ now }}</p>
 <form method="post" action="/submit">
-    <input type="hidden" name="csrf_token" value="{{csrf()}}">
+    <input type="hidden" name="csrf_token" value="{{ csrf() }}">
     姓名：<input name="name"><br>
     出生年月日：<input name="birthday" placeholder="YYYY-MM-DD"><br>
     性別：<select name="gender"><option value="女">女</option><option value="男">男</option></select><br>
@@ -186,11 +185,12 @@ HTML = r'''<!DOCTYPE html>
         </select> {{CURRENCY}}<br>
     滿意度：<input name="satisfaction"><br>
     建議：<input name="suggestion"><br>
-    <input type="hidden" name="event_id" value="{{ sha(str(time.time())) }}">
+    <input type="hidden" name="event_id" value="{{ sha(str(now)) }}">
     <input type="hidden" name="fbc" value="">
     <input type="hidden" name="fbp" value="">
     <button type="submit">送出</button>
 </form>
+<a href="/list"><button>用戶名單/下載PKL</button></a>
 </body>
 </html>'''
 
@@ -206,11 +206,15 @@ def https_redirect():
 
 @app.route('/')
 def index():
-    return render_template_string(HTML,
-                                  PIXEL_ID=PIXEL_ID,
-                                  PRICES=json.dumps(PRICES),
-                                  CURRENCY=CURRENCY,
-                                  csrf=csrf)
+    return render_template_string(
+        HTML,
+        PIXEL_ID=PIXEL_ID,
+        PRICES=PRICES,
+        CURRENCY=CURRENCY,
+        csrf=csrf,
+        sha=sha,
+        now=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    )
 
 @app.route('/submit', methods=['POST'])
 def submit():
@@ -350,7 +354,46 @@ def submit():
 
     return make_response("感謝您的填寫！", 200)
 
-# ==== 自動補件 thread ====
+@app.route('/list')
+def list_users():
+    mp = load_user_map()
+    rows = []
+    for k, v in mp.items():
+        line = "<tr><td>{}</td>{}</tr>".format(
+            k,
+            "".join(f"<td>{v.get(col,'')}</td>" for col in
+                ["name", "birthday", "ge", "em", "ph", "event_id", "value", "satisfaction", "suggestion"])
+        )
+        rows.append(line)
+    table = f"""
+    <h2>目前 user_profile_map</h2>
+    <a href="/download_pkl"><button>下載最新 user_profile_map.pkl</button></a>
+    <table border="1" cellpadding="4" cellspacing="0">
+        <thead>
+            <tr>
+                <th>Key</th>
+                <th>姓名</th>
+                <th>生日</th>
+                <th>性別</th>
+                <th>Email</th>
+                <th>電話</th>
+                <th>event_id</th>
+                <th>金額</th>
+                <th>滿意度</th>
+                <th>建議</th>
+            </tr>
+        </thead>
+        <tbody>
+            {"".join(rows)}
+        </tbody>
+    </table>
+    <a href="/"><button>回首頁</button></a>
+    """
+    return Markup(table)
+
+@app.route('/download_pkl')
+def download_pkl():
+    return send_file(USER_PROFILE_MAP_PATH, as_attachment=True, download_name="user_profile_map.pkl")
 
 def pick_user():
     mp = load_user_map()
@@ -361,7 +404,6 @@ def pick_user():
                 used = pickle.load(f)
             except Exception:
                 pass
-    # 挑出未補件對象
     candidates = [ (k, v) for k, v in mp.items() if v.get("event_id") and k not in used ]
     if not candidates:
         return None, None
@@ -410,14 +452,12 @@ def auto_wake():
         try:
             now = int(time.time())
             last = get_last_event_time()
-            # 補件條件：32~38小時才觸發
             if now - last > random.randint(32*3600, 38*3600):
                 send_auto_event()
             time.sleep(1200) # 20分鐘
         except Exception as e:
             logging.exception("Auto thread error: %s", e)
 
-# ===== 啟動 background thread =====
 threading.Thread(target=auto_wake, daemon=True).start()
 
 if __name__ == "__main__":
