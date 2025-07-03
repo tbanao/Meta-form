@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 2025-07-04
-完全修正：event_id 由 Python 產生，/list 下載PKL、user_profile_map回存，無 Jinja2/str/import 問題
+精簡表單 for 客戶填寫：無金額欄位、無PKL按鈕、無時間、置中
 """
 
 import os, re, time, json, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random, shutil
@@ -12,7 +11,7 @@ from pathlib import Path
 from email.message import EmailMessage
 
 import requests
-from flask import Flask, request, render_template_string, redirect, session, make_response, send_file
+from flask import Flask, request, render_template_string, redirect, session, make_response
 from markupsafe import Markup
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -163,37 +162,45 @@ def send_capi(events, tag, retry=0):
             return send_capi(events, tag, retry+1)
         raise
 
-HTML = r'''<!DOCTYPE html>
+HTML = r'''
+<!DOCTYPE html>
 <html lang="zh-TW">
-<head><meta charset="UTF-8">
-<title>服務滿意度調查</title>
+<head>
+<meta charset="UTF-8">
+<title>服務滿意度調查表單</title>
+<style>
+body { display: flex; align-items: center; justify-content: center; height: 100vh; margin:0; }
+.form-box { width: 100%%; max-width:400px; margin:auto; padding:24px; border-radius:8px; background:#fff; box-shadow:0 2px 12px #0002; }
+.form-box h2 { text-align: center; margin-bottom: 24px; }
+.form-box input, .form-box select { width: 100%%; margin: 6px 0 18px 0; padding: 8px; border-radius:4px; border:1px solid #ccc; }
+.form-box button { width: 100%%; padding: 10px; border:none; border-radius:4px; background:#2563eb; color:#fff; font-size:1rem; }
+</style>
 </head>
 <body>
+<div class="form-box">
 <h2>服務滿意度調查表單</h2>
-<p>目前時間：{{ now }}</p>
 <form method="post" action="/submit">
     <input type="hidden" name="csrf_token" value="{{ csrf() }}">
     <input type="hidden" name="event_id" value="{{ event_id }}">
-    姓名：<input name="name"><br>
+    姓名：<input name="name" required><br>
     出生年月日：<input name="birthday" placeholder="YYYY-MM-DD"><br>
-    性別：<select name="gender"><option value="女">女</option><option value="男">男</option></select><br>
+    性別：
+    <select name="gender">
+        <option value="女">女</option>
+        <option value="男">男</option>
+    </select><br>
     Email：<input name="email"><br>
     電話：<input name="phone"><br>
-    成交金額：
-        <select name="price">
-            {% for p in PRICES %}
-            <option value="{{p}}">{{p}}</option>
-            {% endfor %}
-        </select> {{CURRENCY}}<br>
     滿意度：<input name="satisfaction"><br>
     建議：<input name="suggestion"><br>
     <input type="hidden" name="fbc" value="">
     <input type="hidden" name="fbp" value="">
     <button type="submit">送出</button>
 </form>
-<a href="/list"><button>用戶名單/下載PKL</button></a>
+</div>
 </body>
-</html>'''
+</html>
+'''
 
 @app.route('/healthz')
 @app.route('/health')
@@ -207,17 +214,11 @@ def https_redirect():
 
 @app.route('/')
 def index():
-    # 在這裡 event_id 由 Python 產生，不經 Jinja2 函數
     event_id = sha(str(time.time()) + str(random.random()))
     return render_template_string(
         HTML,
-        PIXEL_ID=PIXEL_ID,
-        PRICES=PRICES,
-        CURRENCY=CURRENCY,
         csrf=csrf,
-        sha=sha,
-        now=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        event_id=event_id,
+        event_id=event_id
     )
 
 @app.route('/submit', methods=['POST'])
@@ -225,11 +226,10 @@ def submit():
     if request.form.get("csrf_token") != session.get("csrf"):
         return "CSRF!", 400
 
-    # 讀取表單
     d = {k: request.form.get(k,"").strip() for k in
          ("name","birthday","gender","email","phone","satisfaction","suggestion")}
     d["phone"] = norm_phone(d["phone"])
-    price     = int(request.form["price"])
+    price     = random.choice(PRICES)  # 這裡金額後端決定
     eid       = request.form.get("event_id") or sha(str(time.time()))
     fbc, fbp  = request.form.get("fbc",""), request.form.get("fbp","")
     ts        = int(time.time())
@@ -358,6 +358,7 @@ def submit():
 
     return make_response("感謝您的填寫！", 200)
 
+# 內部管理功能（後台用，無法讓用戶看到）
 @app.route('/list')
 def list_users():
     mp = load_user_map()
