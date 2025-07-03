@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 app.py — 2025-07-04
-全功能、可直接部署、支援 /list、下載pkl，完全無 Flask/Markup import 問題
+完全修正：event_id 由 Python 產生，/list 下載PKL、user_profile_map回存，無 Jinja2/str/import 問題
 """
 
 import os, re, time, json, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random, shutil
@@ -173,6 +173,7 @@ HTML = r'''<!DOCTYPE html>
 <p>目前時間：{{ now }}</p>
 <form method="post" action="/submit">
     <input type="hidden" name="csrf_token" value="{{ csrf() }}">
+    <input type="hidden" name="event_id" value="{{ event_id }}">
     姓名：<input name="name"><br>
     出生年月日：<input name="birthday" placeholder="YYYY-MM-DD"><br>
     性別：<select name="gender"><option value="女">女</option><option value="男">男</option></select><br>
@@ -186,7 +187,6 @@ HTML = r'''<!DOCTYPE html>
         </select> {{CURRENCY}}<br>
     滿意度：<input name="satisfaction"><br>
     建議：<input name="suggestion"><br>
-    <input type="hidden" name="event_id" value="{{ sha(str(now)) }}">
     <input type="hidden" name="fbc" value="">
     <input type="hidden" name="fbp" value="">
     <button type="submit">送出</button>
@@ -207,6 +207,8 @@ def https_redirect():
 
 @app.route('/')
 def index():
+    # 在這裡 event_id 由 Python 產生，不經 Jinja2 函數
+    event_id = sha(str(time.time()) + str(random.random()))
     return render_template_string(
         HTML,
         PIXEL_ID=PIXEL_ID,
@@ -214,7 +216,8 @@ def index():
         CURRENCY=CURRENCY,
         csrf=csrf,
         sha=sha,
-        now=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        event_id=event_id,
     )
 
 @app.route('/submit', methods=['POST'])
