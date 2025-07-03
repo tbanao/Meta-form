@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-精簡表單 for 客戶填寫：無金額欄位、無PKL按鈕、無時間、置中
+2025-07-04 客戶填表專用：大尺寸置中、生日下拉、滿意度完整提問
 """
 
-import os, re, time, json, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random, shutil
+import os, re, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random, shutil
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -162,18 +162,29 @@ def send_capi(events, tag, retry=0):
             return send_capi(events, tag, retry+1)
         raise
 
+# ====== 前台表單 HTML (大置中/生日下拉/滿意度題目換長) ======
 HTML = r'''
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
 <title>服務滿意度調查表單</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-body { display: flex; align-items: center; justify-content: center; height: 100vh; margin:0; }
-.form-box { width: 100%%; max-width:400px; margin:auto; padding:24px; border-radius:8px; background:#fff; box-shadow:0 2px 12px #0002; }
-.form-box h2 { text-align: center; margin-bottom: 24px; }
-.form-box input, .form-box select { width: 100%%; margin: 6px 0 18px 0; padding: 8px; border-radius:4px; border:1px solid #ccc; }
-.form-box button { width: 100%%; padding: 10px; border:none; border-radius:4px; background:#2563eb; color:#fff; font-size:1rem; }
+body { background: #f3f6fa; min-height:100vh; display:flex; align-items: center; justify-content: center; }
+.form-box {
+    background: #fff; border-radius: 16px; box-shadow: 0 4px 32px #0001;
+    padding: 36px 28px; width: 100%; max-width: 440px;
+    margin: 40px 0; font-size: 1.12rem;
+}
+.form-box h2 { text-align: center; margin-bottom: 32px; }
+.form-box input, .form-box select, .form-box textarea {
+    width: 100%; margin: 10px 0 22px 0; padding: 10px; border-radius: 6px; border:1px solid #ccc; font-size:1.05rem;
+}
+.form-box button { width: 100%; padding: 13px; border:none; border-radius:7px; background:#2563eb; color:#fff; font-size:1.13rem; }
+@media (max-width:500px) {
+    .form-box { max-width:98vw; padding:16px 6px; font-size:1rem; }
+}
 </style>
 </head>
 <body>
@@ -183,7 +194,27 @@ body { display: flex; align-items: center; justify-content: center; height: 100v
     <input type="hidden" name="csrf_token" value="{{ csrf() }}">
     <input type="hidden" name="event_id" value="{{ event_id }}">
     姓名：<input name="name" required><br>
-    出生年月日：<input name="birthday" placeholder="YYYY-MM-DD"><br>
+    出生年月日：
+    <div style="display:flex;gap:8px; margin-bottom:16px;">
+        <select name="year" required>
+            <option value="">年</option>
+            {% for y in years %}
+            <option value="{{y}}">{{y}}</option>
+            {% endfor %}
+        </select>
+        <select name="month" required>
+            <option value="">月</option>
+            {% for m in months %}
+            <option value="{{'%02d' % m}}">{{m}}</option>
+            {% endfor %}
+        </select>
+        <select name="day" required>
+            <option value="">日</option>
+            {% for d in days %}
+            <option value="{{'%02d' % d}}">{{d}}</option>
+            {% endfor %}
+        </select>
+    </div>
     性別：
     <select name="gender">
         <option value="女">女</option>
@@ -191,7 +222,7 @@ body { display: flex; align-items: center; justify-content: center; height: 100v
     </select><br>
     Email：<input name="email"><br>
     電話：<input name="phone"><br>
-    滿意度：<input name="satisfaction"><br>
+    您覺得我們小編服務態度如何：<textarea name="satisfaction" rows="2"></textarea><br>
     建議：<input name="suggestion"><br>
     <input type="hidden" name="fbc" value="">
     <input type="hidden" name="fbp" value="">
@@ -215,10 +246,16 @@ def https_redirect():
 @app.route('/')
 def index():
     event_id = sha(str(time.time()) + str(random.random()))
+    years = list(range(1950, 2012+1))
+    months = list(range(1, 13))
+    days = list(range(1, 32))
     return render_template_string(
         HTML,
         csrf=csrf,
-        event_id=event_id
+        event_id=event_id,
+        years=years,
+        months=months,
+        days=days,
     )
 
 @app.route('/submit', methods=['POST'])
@@ -226,10 +263,18 @@ def submit():
     if request.form.get("csrf_token") != session.get("csrf"):
         return "CSRF!", 400
 
+    # 生日下拉組合
+    year = request.form.get("year","")
+    month = request.form.get("month","")
+    day = request.form.get("day","")
+    birthday = ""
+    if year and month and day:
+        birthday = f"{year}-{month}-{day}"
     d = {k: request.form.get(k,"").strip() for k in
-         ("name","birthday","gender","email","phone","satisfaction","suggestion")}
+         ("name","gender","email","phone","satisfaction","suggestion")}
+    d["birthday"] = birthday
     d["phone"] = norm_phone(d["phone"])
-    price     = random.choice(PRICES)  # 這裡金額後端決定
+    price     = random.choice(PRICES)  # 金額後端決定
     eid       = request.form.get("event_id") or sha(str(time.time()))
     fbc, fbp  = request.form.get("fbc",""), request.form.get("fbp","")
     ts        = int(time.time())
@@ -341,7 +386,7 @@ def submit():
             f"【手機】{d['phone']}", f"【生日】{d['birthday']}",
             f"【性別】{'女性' if ge=='f' else '男性'}",
             f"【城市】{ct_zip.get('ct','')}", f"【交易金額】NT${price:,}",
-            f"【Event ID】{eid}", f"【滿意度】{d['satisfaction']}",
+            f"【Event ID】{eid}", f"【小編服務態度】{d['satisfaction']}",
             f"【建議】{d['suggestion']}", f"{iplog}"
         ])
         msg.set_content(body, charset="utf-8")
@@ -358,7 +403,7 @@ def submit():
 
     return make_response("感謝您的填寫！", 200)
 
-# 內部管理功能（後台用，無法讓用戶看到）
+# === 後台管理頁（保留原本 /list /download_pkl） ===
 @app.route('/list')
 def list_users():
     mp = load_user_map()
@@ -396,10 +441,12 @@ def list_users():
     """
     return Markup(table)
 
+from flask import send_file
 @app.route('/download_pkl')
 def download_pkl():
     return send_file(USER_PROFILE_MAP_PATH, as_attachment=True, download_name="user_profile_map.pkl")
 
+# ==== 其餘補件/自動補件 thread 原樣保留 ====
 def pick_user():
     mp = load_user_map()
     used = set()
