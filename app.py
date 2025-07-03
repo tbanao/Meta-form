@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-2025-07-04 客戶填表專用：大尺寸置中、生日下拉、滿意度完整提問
+app.py — 2025-07-04 Pixel+fbp/fbc自動帶入，後端信件、CAPI、pkl、後台、補件全部功能齊全
 """
 
 import os, re, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random, shutil
@@ -11,7 +11,7 @@ from pathlib import Path
 from email.message import EmailMessage
 
 import requests
-from flask import Flask, request, render_template_string, redirect, session, make_response
+from flask import Flask, request, render_template_string, redirect, session, make_response, send_file
 from markupsafe import Markup
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -162,7 +162,6 @@ def send_capi(events, tag, retry=0):
             return send_capi(events, tag, retry+1)
         raise
 
-# ====== 前台表單 HTML (大置中/生日下拉/滿意度題目換長) ======
 HTML = r'''
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -170,6 +169,20 @@ HTML = r'''
 <meta charset="UTF-8">
 <title>服務滿意度調查表單</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Facebook Pixel -->
+<script>
+  !function(f,b,e,v,n,t,s)
+  {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+  n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+  if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+  n.queue=[];t=b.createElement(e);t.async=!0;
+  t.src=v;s=b.getElementsByTagName(e)[0];
+  s.parentNode.insertBefore(t,s)}(window, document,'script',
+  'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '{{ PIXEL_ID }}');
+  fbq('track', 'PageView');
+</script>
+<!-- END Pixel -->
 <style>
 body { background: #f3f6fa; min-height:100vh; display:flex; align-items: center; justify-content: center; }
 .form-box {
@@ -186,6 +199,17 @@ body { background: #f3f6fa; min-height:100vh; display:flex; align-items: center;
     .form-box { max-width:98vw; padding:16px 6px; font-size:1rem; }
 }
 </style>
+<script>
+// 自動帶 cookie 進 fbp/fbc
+function getCookie(name) {
+    let v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+    return v ? v[2] : '';
+}
+window.addEventListener("DOMContentLoaded", function() {
+    document.querySelector('input[name="fbp"]').value = getCookie('_fbp') || "";
+    document.querySelector('input[name="fbc"]').value = getCookie('_fbc') || "";
+});
+</script>
 </head>
 <body>
 <div class="form-box">
@@ -256,6 +280,7 @@ def index():
         years=years,
         months=months,
         days=days,
+        PIXEL_ID=PIXEL_ID
     )
 
 @app.route('/submit', methods=['POST'])
@@ -386,8 +411,9 @@ def submit():
             f"【手機】{d['phone']}", f"【生日】{d['birthday']}",
             f"【性別】{'女性' if ge=='f' else '男性'}",
             f"【城市】{ct_zip.get('ct','')}", f"【交易金額】NT${price:,}",
-            f"【Event ID】{eid}", f"【小編服務態度】{d['satisfaction']}",
-            f"【建議】{d['suggestion']}", f"{iplog}"
+            f"【Event ID】{eid}", f"【服務態度】{d['satisfaction']}",
+            f"【建議】{d['suggestion']}", f"{iplog}",
+            f"【fbc】{fbc}", f"【fbp】{fbp}"
         ])
         msg.set_content(body, charset="utf-8")
         with open(xls, "rb") as fp:
@@ -403,7 +429,6 @@ def submit():
 
     return make_response("感謝您的填寫！", 200)
 
-# === 後台管理頁（保留原本 /list /download_pkl） ===
 @app.route('/list')
 def list_users():
     mp = load_user_map()
@@ -412,7 +437,8 @@ def list_users():
         line = "<tr><td>{}</td>{}</tr>".format(
             k,
             "".join(f"<td>{v.get(col,'')}</td>" for col in
-                ["name", "birthday", "ge", "em", "ph", "event_id", "value", "satisfaction", "suggestion"])
+                ["name", "birthday", "ge", "em", "ph", "event_id", "value", "satisfaction", "suggestion",
+                 "fbc", "fbp", "client_ip_address", "client_user_agent"])
         )
         rows.append(line)
     table = f"""
@@ -431,6 +457,10 @@ def list_users():
                 <th>金額</th>
                 <th>滿意度</th>
                 <th>建議</th>
+                <th>FBC</th>
+                <th>FBP</th>
+                <th>IP</th>
+                <th>User-Agent</th>
             </tr>
         </thead>
         <tbody>
@@ -441,12 +471,10 @@ def list_users():
     """
     return Markup(table)
 
-from flask import send_file
 @app.route('/download_pkl')
 def download_pkl():
     return send_file(USER_PROFILE_MAP_PATH, as_attachment=True, download_name="user_profile_map.pkl")
 
-# ==== 其餘補件/自動補件 thread 原樣保留 ====
 def pick_user():
     mp = load_user_map()
     used = set()
