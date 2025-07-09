@@ -270,7 +270,7 @@ def https_redirect():
 @app.route('/')
 def index():
     event_id = sha(str(time.time()) + str(random.random()))
-    years = list(range(1950, 2012+1))
+    years = list(range(1960, 2010+1))
     months = list(range(1, 13))
     days = list(range(1, 32))
     return render_template_string(
