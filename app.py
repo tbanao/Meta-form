@@ -101,18 +101,25 @@ def log_event(ts, eid, fake=False):
 
 def ip_lookup(ip):
     try:
+        # 內網、本地、無IP時，直接回台灣
         if not ip or ip.startswith("127.") or ip.startswith("192.168.") or ip.startswith("10."):
-            return {}, ""
+            return {"ct": "台灣", "zip": ""}, "[本地IP略過]"
         url = f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}"
         resp = requests.get(url, timeout=3)
         if resp.status_code != 200:
-            return {}, ""
+            return {"ct": "台灣", "zip": ""}, f"[查城市失敗]{ip}"
         data = resp.json()
         ct = data.get("city", "") or data.get("region", "")
         zipc = data.get("postal", "")
-        return {"ct": ct, "zip": zipc}, f"[查城市]{ip}→{ct}/{zipc}"
+        country = data.get("country", "").lower()
+        # 只要不是台灣，一律回台灣
+        if country == "tw" or "台" in ct:
+            return {"ct": ct or "台灣", "zip": zipc}, f"[查城市]{ip}→{ct}/{zipc}"
+        else:
+            return {"ct": "台灣", "zip": ""}, f"[查城市非台灣]{ip}→強制台灣"
     except Exception as e:
-        return {}, f"[IPinfo失敗]{ip}:{e}"
+        # 超時或任何錯誤都回台灣
+        return {"ct": "台灣", "zip": ""}, f"[IPinfo失敗]{ip}:{e}"
 
 def get_last_event_time():
     try:
