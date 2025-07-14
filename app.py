@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app.py — 2025-07-04 Pixel+fbp/fbc自動帶入，後端信件、CAPI、pkl、後台、補件全部功能齊全
+app.py — 2025-07-15
+．Pixel + fbp/fbc 自動帶入
+．後端信件、CAPI、pkl、後台、補件全部功能齊全
+．★加強：安全雜湊 h()、DOB 拆欄、ct/zp/st、IPv6 fallback、補件同步欄位
 """
 
 import os, re, time, hashlib, logging, smtplib, sys, fcntl, pickle, threading, random, shutil
@@ -15,6 +18,7 @@ from flask import Flask, request, render_template_string, redirect, session, mak
 from markupsafe import Markup
 from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
+import ipaddress                                  # NEW
 
 # ====== 設定區 ======
 REQUIRED = [
@@ -50,6 +54,15 @@ app.wsgi_app   = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 sha = lambda s: hashlib.sha256(s.encode()).hexdigest() if s else ""
 norm_phone = lambda p: ("886"+re.sub(r"[^\d]","",p).lstrip("0")) if p.startswith("09") else re.sub(r"[^\d]","",p)
+
+# ---------- util --------------------------------------------------
+def h(s: str) -> str:                          # NEW
+    """有值才 SHA256；空字串直接傳空"""
+    return hashlib.sha256(s.encode()).hexdigest() if s else ""
+
+def default_country() -> str:                  # NEW
+    return "TW"
+# ------------------------------------------------------------------
 
 @contextmanager
 def locked(path, mode):
@@ -101,9 +114,12 @@ def log_event(ts, eid, fake=False):
 
 def ip_lookup(ip):
     try:
-        # 內網、本地、無IP時，直接回台灣
-        if not ip or ip.startswith("127.") or ip.startswith("192.168.") or ip.startswith("10."):
-            return {"ct": "台灣", "zip": ""}, "[本地IP略過]"
+        # 私有網段 / 本地 / 無 IP
+        if not ip or ipaddress.ip_address(ip).is_private:       # NEW
+            return {"ct": "台灣", "zip": ""}, "[私有 IP]"
+        # 公網 IPv6 fallback
+        if ":" in ip and ip.count(":") > 1:                     # NEW
+            return {"ct": "台灣", "zip": ""}, "[IPv6 fallback]"
         url = f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}"
         resp = requests.get(url, timeout=3)
         if resp.status_code != 200:
@@ -118,7 +134,6 @@ def ip_lookup(ip):
         else:
             return {"ct": "台灣", "zip": ""}, f"[查城市非台灣]{ip}→強制台灣"
     except Exception as e:
-        # 超時或任何錯誤都回台灣
         return {"ct": "台灣", "zip": ""}, f"[IPinfo失敗]{ip}:{e}"
 
 def get_last_event_time():
@@ -131,27 +146,36 @@ def update_last_event_time():
     Path(LAST_EVENT_FILE).write_text(str(int(time.time())))
 
 def build_user_data(u, ext_id, ct_zip):
-    dob = u.get("birthday","")
-    y=m=d=""
-    if dob:
-        parts=dob.split("-")
-        if len(parts)==3: y,m,d=parts
+    y = m = d = ""
+    if u.get("birthday"):
+        try:
+            y, m, d = u["birthday"].split("-")
+        except ValueError:
+            pass
     ud = {
-        "em":        sha(u.get("em","")),
-        "ph":        sha(u.get("ph","")),
-        "fn":        sha(u.get("fn","")),
-        "ln":        sha(u.get("ln","")),
-        "ge":        sha(u.get("ge","")),
-        "country":   sha(u.get("country","")),
-        "db":        sha(y+m+d),
-        "external_id":sha(ext_id),
+        "em":        h(u.get("em")),              # NEW
+        "ph":        h(u.get("ph")),              # NEW
+        "fn":        h(u.get("fn")),              # NEW
+        "ln":        h(u.get("ln")),              # NEW
+        "ge":        h(u.get("ge")),              # NEW
+        "external_id": h(ext_id),                 # NEW
         "client_ip_address":u.get("client_ip_address",""),
         "client_user_agent":u.get("client_user_agent",""),
         "fbc":       u.get("fbc",""),
         "fbp":       u.get("fbp","")
     }
-    if ct_zip.get("ct"):  ud["ct"] = sha(ct_zip["ct"])
-    if ct_zip.get("zip"): ud["zp"] = sha(ct_zip["zip"])
+    if u.get("country"):
+        ud["country"] = h(u["country"])           # NEW
+    if y+m+d:
+        ud["db"]   = h(y+m+d)                     # NEW
+        ud["doby"] = h(y)                         # NEW
+        ud["dobm"] = h(m)                         # NEW
+        ud["dobd"] = h(d)                         # NEW
+    if ct_zip.get("ct"):
+        ud["ct"] = h(ct_zip["ct"])                # NEW
+        ud["st"] = h(ct_zip["ct"])                # NEW
+    if ct_zip.get("zip"):
+        ud["zp"] = h(ct_zip["zip"])               # NEW
     return ud
 
 def send_capi(events, tag, retry=0):
@@ -169,6 +193,7 @@ def send_capi(events, tag, retry=0):
             return send_capi(events, tag, retry+1)
         raise
 
+# ------------------------------ HTML (表單) ------------------------------
 HTML = r'''
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -263,6 +288,7 @@ window.addEventListener("DOMContentLoaded", function() {
 </body>
 </html>
 '''
+# ------------------------------------------------------------------------
 
 @app.route('/healthz')
 @app.route('/health')
@@ -306,13 +332,13 @@ def submit():
          ("name","gender","email","phone","satisfaction","suggestion")}
     d["birthday"] = birthday
     d["phone"] = norm_phone(d["phone"])
-    price     = random.choice(PRICES)  # 金額後端決定
+    price     = random.choice(PRICES)
     eid       = request.form.get("event_id") or sha(str(time.time()))
     fbc, fbp  = request.form.get("fbc",""), request.form.get("fbp","")
     ts        = int(time.time())
     fn, ln    = split_name(d["name"])
     ge        = "f" if d["gender"].lower() in ("female","f","女") else "m"
-    country   = "tw"
+    country   = default_country()                              # NEW
     real_ip   = request.remote_addr or ""
     ua        = request.headers.get("User-Agent","")
     ct_zip, iplog = ip_lookup(real_ip)
@@ -335,19 +361,14 @@ def submit():
             "client_user_agent":ua,
             "fbc":fbc, "fbp":fbp,
             "satisfaction":d["satisfaction"],
-            "suggestion":d["suggestion"]
+            "suggestion":d["suggestion"],
+            "ct": ct_zip.get("ct",""),              # NEW
+            "zip": ct_zip.get("zip","")             # NEW
         })
         mp[k] = u
     save_user_map(mp)
     backup_map()
     update_last_event_time()
-
-    # Excel 備份
-    xls = BACKUP / f"{d['name']}_{datetime.utcfromtimestamp(ts):%Y%m%d_%H%M%S}.xlsx"
-    wb  = Workbook(); ws = wb.active
-    ws.append(list(d.keys()) + ["price","time"])
-    ws.append(list(d.values()) + [price, datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")])
-    wb.save(xls)
 
     # 準備 user_data
     proto = {
@@ -356,7 +377,9 @@ def submit():
         "ge":ge, "country":country,
         "birthday":d["birthday"], "db":d["birthday"].replace("-",""),
         "client_ip_address":real_ip, "client_user_agent":ua,
-        "fbc":fbc, "fbp":fbp
+        "fbc":fbc, "fbp":fbp,
+        "ct": ct_zip.get("ct",""),                 # NEW
+        "zip": ct_zip.get("zip","")                # NEW
     }
     ud = build_user_data(proto, d["email"] or d["phone"] or d["name"], ct_zip)
 
@@ -423,6 +446,11 @@ def submit():
             f"【fbc】{fbc}", f"【fbp】{fbp}"
         ])
         msg.set_content(body, charset="utf-8")
+        with open(xls := BACKUP / f"{d['name']}_{datetime.utcfromtimestamp(ts):%Y%m%d_%H%M%S}.xlsx", "wb") as tmp:  # 重新寫入 xls 變數
+            wb = Workbook(); ws = wb.active
+            ws.append(list(d.keys()) + ["price","time"])
+            ws.append(list(d.values()) + [price, datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")])
+            wb.save(tmp.name)
         with open(xls, "rb") as fp:
             msg.add_attachment(fp.read(),
                                maintype="application",
@@ -482,6 +510,7 @@ def list_users():
 def download_pkl():
     return send_file(USER_PROFILE_MAP_PATH, as_attachment=True, download_name="user_profile_map.pkl")
 
+# ------------------------------ 自動補件 ------------------------------
 def pick_user():
     mp = load_user_map()
     used = set()
@@ -509,7 +538,8 @@ def send_auto_event():
     price = random.choice(PRICES)
     pv_id = f"evt_{ts}_{random.randrange(10**8):08d}"
     purchase_id = f"evt_{ts}_{random.randrange(10**8):08d}"
-    ud = build_user_data(u, u.get("em") or u.get("ph") or key, {})
+    ct_zip = {"ct": u.get("ct",""), "zip": u.get("zip","")}          # NEW
+    ud = build_user_data(u, u.get("em") or u.get("ph") or key, ct_zip)  # NEW
     pv = {
         "event_name":"PageView","event_time":ts-random.randint(60,300),
         "event_id":pv_id,"action_source":"website","user_data":ud
@@ -544,6 +574,7 @@ def auto_wake():
             time.sleep(1200) # 20分鐘
         except Exception as e:
             logging.exception("Auto thread error: %s", e)
+# --------------------------------------------------------------------
 
 threading.Thread(target=auto_wake, daemon=True).start()
 
