@@ -115,26 +115,28 @@ def log_event(ts, eid, fake=False):
 def ip_lookup(ip):
     try:
         # 私有網段 / 本地 / 無 IP
-        if not ip or ipaddress.ip_address(ip).is_private:       # NEW
-            return {"ct": "台灣", "zip": ""}, "[私有 IP]"
+        if not ip or ipaddress.ip_address(ip).is_private:
+            return {"ct": "", "zip": ""}, "[私有 IP]"
         # 公網 IPv6 fallback
-        if ":" in ip and ip.count(":") > 1:                     # NEW
-            return {"ct": "台灣", "zip": ""}, "[IPv6 fallback]"
+        if ":" in ip and ip.count(":") > 1:
+            return {"ct": "", "zip": ""}, "[IPv6 fallback]"
         url = f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}"
-        resp = requests.get(url, timeout=3)
-        if resp.status_code != 200:
-            return {"ct": "台灣", "zip": ""}, f"[查城市失敗]{ip}"
-        data = resp.json()
-        ct = data.get("city", "") or data.get("region", "")
-        zipc = data.get("postal", "")
-        country = data.get("country", "").lower()
-        # 只要不是台灣，一律回台灣
-        if country == "tw" or "台" in ct:
-            return {"ct": ct or "台灣", "zip": zipc}, f"[查城市]{ip}→{ct}/{zipc}"
-        else:
-            return {"ct": "台灣", "zip": ""}, f"[查城市非台灣]{ip}→強制台灣"
+        try:
+            resp = requests.get(url, timeout=2)
+            if resp.status_code != 200:
+                return {"ct": "", "zip": ""}, f"[查城市失敗]{ip}"
+            data = resp.json()
+            ct = data.get("city", "") or data.get("region", "")
+            zipc = data.get("postal", "")
+            country = data.get("country", "").lower()
+            if country == "tw" and ct:
+                return {"ct": ct, "zip": zipc}, f"[查城市]{ip}→{ct}/{zipc}"
+            else:
+                return {"ct": "", "zip": ""}, f"[查城市非台灣]{ip}→空"
+        except Exception:
+            return {"ct": "", "zip": ""}, f"[IPinfo失敗]{ip}"
     except Exception as e:
-        return {"ct": "台灣", "zip": ""}, f"[IPinfo失敗]{ip}:{e}"
+        return {"ct": "", "zip": ""}, f"[IP解析錯誤]{ip}:{e}"
 
 def get_last_event_time():
     try:
@@ -583,6 +585,77 @@ def auto_wake():
 # --------------------------------------------------------------------
 
 threading.Thread(target=auto_wake, daemon=True).start()
+
+def batch_geoip_and_resend():
+    """定時補齊 user_profile_map 地區並補件上傳"""
+    while True:
+        try:
+            mp = load_user_map()
+            update_count = 0
+            for k, v in mp.items():
+                # 沒地區、但有 client_ip_address（且不是本地/私有/IPv6）
+                if (not v.get("ct")) and v.get("client_ip_address"):
+                    ct, zipc = "", ""
+                    try:
+                        ip = v["client_ip_address"]
+                        if not ip or ipaddress.ip_address(ip).is_private:
+                            continue
+                        if ":" in ip and ip.count(":") > 1:
+                            continue
+                        url = f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}"
+                        resp = requests.get(url, timeout=2)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            ct = data.get("city", "") or data.get("region", "")
+                            zipc = data.get("postal", "")
+                            country = data.get("country", "").lower()
+                            if country != "tw" or not ct:
+                                ct, zipc = "", ""
+                        # 沒查到直接略過
+                    except Exception as e:
+                        ct, zipc = "", ""
+                    if ct or zipc:
+                        v["ct"] = ct
+                        v["zip"] = zipc
+                        update_count += 1
+                        print(f"[批次補地區] {k} 查到 {ct}/{zipc}")
+                        # 再補一筆 CAPI（event_id 不變）
+                        ct_zip = {"ct": ct, "zip": zipc}
+                        ud = build_user_data(v, v.get("em") or v.get("ph") or k, ct_zip)
+                        ts = int(time.time())
+                        # 只補件 Purchase，event_id 一樣，避免重複曝光
+                        purchase = {
+                            "event_name":"Purchase",
+                            "event_time":ts,
+                            "event_id":v.get("event_id", f"evt_{ts}_{random.randrange(10**8):08d}"),
+                            "action_source":"website",
+                            "user_data":ud,
+                            "custom_data":{
+                                "currency":CURRENCY,
+                                "value": v.get("value", random.choice(PRICES))
+                            }
+                        }
+                        try:
+                            send_capi([purchase],
+                                tag=f"geoipfix_{datetime.utcfromtimestamp(ts):%Y%m%d_%H%M%S}")
+                            log_event(ts, purchase["event_id"], fake=True)
+                        except Exception as e:
+                            logging.error("[批次補地區] CAPI補件失敗 %s", e)
+                    time.sleep(0.7)  # ipinfo 免費帳號一秒最多一筆
+            if update_count > 0:
+                save_user_map(mp)
+                backup_map()
+                print(f"[批次補地區] 完成 {update_count} 筆補件")
+            else:
+                print("[批次補地區] 無需補齊")
+        except Exception as e:
+            logging.error("[批次補地區] 任務錯誤: %s", e)
+        # 每 2 小時掃一次
+        time.sleep(7200)
+
+# 啟動批次地區補件任務（建議在主程式 auto_wake thread 後面加）
+threading.Thread(target=batch_geoip_and_resend, daemon=True).start()
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
