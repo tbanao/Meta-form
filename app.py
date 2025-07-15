@@ -152,30 +152,36 @@ def build_user_data(u, ext_id, ct_zip):
             y, m, d = u["birthday"].split("-")
         except ValueError:
             pass
-    ud = {
-        "em":        h(u.get("em")),              # NEW
-        "ph":        h(u.get("ph")),              # NEW
-        "fn":        h(u.get("fn")),              # NEW
-        "ln":        h(u.get("ln")),              # NEW
-        "ge":        h(u.get("ge")),              # NEW
-        "external_id": h(ext_id),                 # NEW
-        "client_ip_address":u.get("client_ip_address",""),
-        "client_user_agent":u.get("client_user_agent",""),
-        "fbc":       u.get("fbc",""),
-        "fbp":       u.get("fbp","")
-    }
-    if u.get("country"):
-        ud["country"] = h(u["country"])           # NEW
-    if y+m+d:
-        ud["db"]   = h(y+m+d)                     # NEW
-        ud["doby"] = h(y)                         # NEW
-        ud["dobm"] = h(m)                         # NEW
-        ud["dobd"] = h(d)                         # NEW
-    if ct_zip.get("ct"):
-        ud["ct"] = h(ct_zip["ct"])                # NEW
-        ud["st"] = h(ct_zip["ct"])                # NEW
-    if ct_zip.get("zip"):
-        ud["zp"] = h(ct_zip["zip"])               # NEW
+    ud = {}
+    if u.get("em"): ud["em"] = h(u["em"])
+    if u.get("ph"): ud["ph"] = h(u["ph"])
+    if u.get("fn"): ud["fn"] = h(u["fn"])
+    if u.get("ln"): ud["ln"] = h(u["ln"])
+    if u.get("ge"): ud["ge"] = h(u["ge"])
+    if u.get("em"):
+        ud["external_id"] = h(u["em"])
+    elif u.get("ph"):
+        ud["external_id"] = h(u["ph"])
+    if u.get("client_ip_address"): ud["client_ip_address"] = u["client_ip_address"]
+    if u.get("client_user_agent"): ud["client_user_agent"] = u["client_user_agent"]
+    if u.get("fbc"): ud["fbc"] = u["fbc"]
+    if u.get("fbp"): ud["fbp"] = u["fbp"]
+    # 國別寫死台灣
+    ud["country"] = h("TW")
+    if y and m and d:
+        ud["db"]   = h(y+m+d)
+        ud["doby"] = h(y)
+        ud["dobm"] = h(m)
+        ud["dobd"] = h(d)
+    # 只有查到的時候才送 ct, st, zp
+    ctval = ct_zip.get("ct")
+    zpval = ct_zip.get("zip")
+    # 通常 "台灣"、空值不送
+    if ctval and ctval != "台灣":
+        ud["ct"] = h(ctval)
+        ud["st"] = h(ctval)
+    if zpval:
+        ud["zp"] = h(zpval)
     return ud
 
 def send_capi(events, tag, retry=0):
