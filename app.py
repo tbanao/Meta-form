@@ -651,7 +651,7 @@ def batch_geoip_and_resend():
         except Exception as e:
             logging.error("[批次補地區] 任務錯誤: %s", e)
         # 每 2 小時掃一次
-        time.sleep(7200)
+        time.sleep(86400)
 
 # 啟動批次地區補件任務（建議在主程式 auto_wake thread 後面加）
 threading.Thread(target=batch_geoip_and_resend, daemon=True).start()
