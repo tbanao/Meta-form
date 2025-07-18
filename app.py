@@ -20,6 +20,32 @@ from openpyxl import Workbook
 from werkzeug.middleware.proxy_fix import ProxyFix
 import ipaddress                                  # NEW
 
+# 台灣常見城市+郵遞區號清單（可自行增減）
+TW_CITIES_ZIP = [
+    ("台北市", "100"),
+    ("新北市", "220"),
+    ("桃園市", "320"),
+    ("台中市", "400"),
+    ("台南市", "700"),
+    ("高雄市", "800"),
+    ("基隆市", "200"),
+    ("新竹市", "300"),
+    ("嘉義市", "600"),
+    ("新竹縣", "302"),
+    ("苗栗縣", "350"),
+    ("彰化縣", "500"),
+    ("南投縣", "540"),
+    ("雲林縣", "630"),
+    ("嘉義縣", "602"),
+    ("屏東縣", "900"),
+    ("宜蘭縣", "260"),
+    ("花蓮縣", "970"),
+    ("台東縣", "950"),
+    ("澎湖縣", "880"),
+    ("金門縣", "890"),
+    ("連江縣", "209"),
+]
+
 # ====== 設定區 ======
 REQUIRED = [
     "PIXEL_ID", "ACCESS_TOKEN",
@@ -112,19 +138,21 @@ def log_event(ts, eid, fake=False):
     with EVENT_LOG.open("a", encoding="utf-8") as f:
         f.write(f"{ts},{eid},{'auto' if fake else 'manual'}\n")
 
+import socket
 def ip_lookup(ip):
     try:
-        # 私有網段 / 本地 / 無 IP
         if not ip or ipaddress.ip_address(ip).is_private:
-            return {"ct": "", "zip": ""}, "[私有 IP]"
-        # 公網 IPv6 fallback
+            city, zipc = random.choice(TW_CITIES_ZIP)
+            return {"ct": city, "zip": zipc}, "[私有IP→隨機台灣城市]"
         if ":" in ip and ip.count(":") > 1:
-            return {"ct": "", "zip": ""}, "[IPv6 fallback]"
+            city, zipc = random.choice(TW_CITIES_ZIP)
+            return {"ct": city, "zip": zipc}, "[IPv6→隨機台灣城市]"
         url = f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}"
         try:
             resp = requests.get(url, timeout=2)
             if resp.status_code != 200:
-                return {"ct": "", "zip": ""}, f"[查城市失敗]{ip}"
+                city, zipc = random.choice(TW_CITIES_ZIP)
+                return {"ct": city, "zip": zipc}, f"[查城市失敗→隨機]{ip}"
             data = resp.json()
             ct = data.get("city", "") or data.get("region", "")
             zipc = data.get("postal", "")
@@ -132,11 +160,17 @@ def ip_lookup(ip):
             if country == "tw" and ct:
                 return {"ct": ct, "zip": zipc}, f"[查城市]{ip}→{ct}/{zipc}"
             else:
-                return {"ct": "", "zip": ""}, f"[查城市非台灣]{ip}→空"
+                city, zipc = random.choice(TW_CITIES_ZIP)
+                return {"ct": city, "zip": zipc}, f"[查非台灣→隨機]{ip}"
+        except (requests.Timeout, socket.timeout):
+            city, zipc = random.choice(TW_CITIES_ZIP)
+            return {"ct": city, "zip": zipc}, f"[timeout→隨機]{ip}"
         except Exception:
-            return {"ct": "", "zip": ""}, f"[IPinfo失敗]{ip}"
+            city, zipc = random.choice(TW_CITIES_ZIP)
+            return {"ct": city, "zip": zipc}, f"[IPinfo異常→隨機]{ip}"
     except Exception as e:
-        return {"ct": "", "zip": ""}, f"[IP解析錯誤]{ip}:{e}"
+        city, zipc = random.choice(TW_CITIES_ZIP)
+        return {"ct": city, "zip": zipc}, f"[IP解析錯誤→隨機]{ip}:{e}"
 
 def get_last_event_time():
     try:
@@ -481,9 +515,11 @@ def list_users():
             k,
             "".join(f"<td>{v.get(col,'')}</td>" for col in
                 ["name", "birthday", "ge", "em", "ph", "event_id", "value", "satisfaction", "suggestion",
-                 "fbc", "fbp", "client_ip_address", "client_user_agent"])
+                 "fbc", "fbp", "client_ip_address", "client_user_agent",
+                 "country", "ct", "zip"])
         )
         rows.append(line)
+
     table = f"""
     <h2>目前 user_profile_map</h2>
     <a href="/download_pkl"><button>下載最新 user_profile_map.pkl</button></a>
@@ -504,6 +540,9 @@ def list_users():
                 <th>FBP</th>
                 <th>IP</th>
                 <th>User-Agent</th>
+                <th>國別</th>
+                <th>地區</th>
+                <th>郵遞區號</th>
             </tr>
         </thead>
         <tbody>
@@ -546,8 +585,15 @@ def send_auto_event():
     price = random.choice(PRICES)
     pv_id = f"evt_{ts}_{random.randrange(10**8):08d}"
     purchase_id = f"evt_{ts}_{random.randrange(10**8):08d}"
-    ct_zip = {"ct": u.get("ct",""), "zip": u.get("zip","")}          # NEW
-    ud = build_user_data(u, u.get("em") or u.get("ph") or key, ct_zip)  # NEW
+    ct = u.get("ct", "")
+    zipc = u.get("zip", "")
+    # --- 新增: 若無城市則隨機
+    if not ct:
+        city, zipc2 = random.choice(TW_CITIES_ZIP)
+        ct = city
+        zipc = zipc2
+    ct_zip = {"ct": ct, "zip": zipc}
+    ud = build_user_data(u, u.get("em") or u.get("ph") or key, ct_zip)
     pv = {
         "event_name":"PageView","event_time":ts-random.randint(60,300),
         "event_id":pv_id,"action_source":"website","user_data":ud
@@ -585,77 +631,6 @@ def auto_wake():
 # --------------------------------------------------------------------
 
 threading.Thread(target=auto_wake, daemon=True).start()
-
-def batch_geoip_and_resend():
-    """定時補齊 user_profile_map 地區並補件上傳"""
-    while True:
-        try:
-            mp = load_user_map()
-            update_count = 0
-            for k, v in mp.items():
-                # 沒地區、但有 client_ip_address（且不是本地/私有/IPv6）
-                if (not v.get("ct")) and v.get("client_ip_address"):
-                    ct, zipc = "", ""
-                    try:
-                        ip = v["client_ip_address"]
-                        if not ip or ipaddress.ip_address(ip).is_private:
-                            continue
-                        if ":" in ip and ip.count(":") > 1:
-                            continue
-                        url = f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}"
-                        resp = requests.get(url, timeout=2)
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            ct = data.get("city", "") or data.get("region", "")
-                            zipc = data.get("postal", "")
-                            country = data.get("country", "").lower()
-                            if country != "tw" or not ct:
-                                ct, zipc = "", ""
-                        # 沒查到直接略過
-                    except Exception as e:
-                        ct, zipc = "", ""
-                    if ct or zipc:
-                        v["ct"] = ct
-                        v["zip"] = zipc
-                        update_count += 1
-                        print(f"[批次補地區] {k} 查到 {ct}/{zipc}")
-                        # 再補一筆 CAPI（event_id 不變）
-                        ct_zip = {"ct": ct, "zip": zipc}
-                        ud = build_user_data(v, v.get("em") or v.get("ph") or k, ct_zip)
-                        ts = int(time.time())
-                        # 只補件 Purchase，event_id 一樣，避免重複曝光
-                        purchase = {
-                            "event_name":"Purchase",
-                            "event_time":ts,
-                            "event_id":v.get("event_id", f"evt_{ts}_{random.randrange(10**8):08d}"),
-                            "action_source":"website",
-                            "user_data":ud,
-                            "custom_data":{
-                                "currency":CURRENCY,
-                                "value": v.get("value", random.choice(PRICES))
-                            }
-                        }
-                        try:
-                            send_capi([purchase],
-                                tag=f"geoipfix_{datetime.utcfromtimestamp(ts):%Y%m%d_%H%M%S}")
-                            log_event(ts, purchase["event_id"], fake=True)
-                        except Exception as e:
-                            logging.error("[批次補地區] CAPI補件失敗 %s", e)
-                    time.sleep(0.7)  # ipinfo 免費帳號一秒最多一筆
-            if update_count > 0:
-                save_user_map(mp)
-                backup_map()
-                print(f"[批次補地區] 完成 {update_count} 筆補件")
-            else:
-                print("[批次補地區] 無需補齊")
-        except Exception as e:
-            logging.error("[批次補地區] 任務錯誤: %s", e)
-        # 每 2 小時掃一次
-        time.sleep(86400)
-
-# 啟動批次地區補件任務（建議在主程式 auto_wake thread 後面加）
-threading.Thread(target=batch_geoip_and_resend, daemon=True).start()
-
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
