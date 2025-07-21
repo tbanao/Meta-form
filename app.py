@@ -13,12 +13,10 @@ from datetime import datetime
 from pathlib import Path
 from email.message import EmailMessage
 
-import requests
 from flask import Flask, request, render_template_string, redirect, session, make_response, send_file
 from markupsafe import Markup
 from openpyxl import Workbook
-from werkzeug.middleware.proxy_fix import ProxyFix
-import ipaddress                                  # NEW
+from werkzeug.middleware.proxy_fix import ProxyFix                                 
 
 # 台灣常見城市+郵遞區號清單（可自行增減）
 TW_CITIES_ZIP = [
@@ -72,6 +70,13 @@ FAILED_LOG            = Path("capi_failed.log")
 IPINFO_TOKEN          = "12f0afcbb25f7c"
 LAST_EVENT_FILE       = "last_event_time.txt"
 
+REQUIRED_USER_FIELDS = [
+    "name", "fn", "ln", "birthday", "db", "ge", "country", "em", "ph",
+    "event_id", "value", "satisfaction", "suggestion",
+    "fbc", "fbp", "client_ip_address", "client_user_agent",
+    "ct", "zip"
+]
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
 app = Flask(__name__)
@@ -97,16 +102,27 @@ def locked(path, mode):
         yield f
         fcntl.flock(f, fcntl.LOCK_UN)
 
+def repair_user_map(mp):
+    # 確保所有 key 的 value（dict）都包含所有必備欄位
+    for v in mp.values():
+        for field in REQUIRED_USER_FIELDS:
+            v.setdefault(field, "")
+    return mp
+
 def load_user_map():
     if not os.path.exists(USER_PROFILE_MAP_PATH) or os.path.getsize(USER_PROFILE_MAP_PATH)==0:
         return {}
     with locked(USER_PROFILE_MAP_PATH, "rb") as f:
         try:
-            return pickle.load(f)
-        except Exception:
+            mp = pickle.load(f)
+            return repair_user_map(mp)
+        except Exception as e:
+            logging.exception("user_profile_map 載入失敗")
             return {}
 
 def save_user_map(mp):
+    mp = repair_user_map(mp)
+    backup_map()   # <-- 每次寫入前都自動備份
     with locked(USER_PROFILE_MAP_PATH, "wb") as f:
         pickle.dump(mp, f)
 
@@ -138,39 +154,9 @@ def log_event(ts, eid, fake=False):
     with EVENT_LOG.open("a", encoding="utf-8") as f:
         f.write(f"{ts},{eid},{'auto' if fake else 'manual'}\n")
 
-import socket
 def ip_lookup(ip):
-    try:
-        if not ip or ipaddress.ip_address(ip).is_private:
-            city, zipc = random.choice(TW_CITIES_ZIP)
-            return {"ct": city, "zip": zipc}, "[私有IP→隨機台灣城市]"
-        if ":" in ip and ip.count(":") > 1:
-            city, zipc = random.choice(TW_CITIES_ZIP)
-            return {"ct": city, "zip": zipc}, "[IPv6→隨機台灣城市]"
-        url = f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}"
-        try:
-            resp = requests.get(url, timeout=2)
-            if resp.status_code != 200:
-                city, zipc = random.choice(TW_CITIES_ZIP)
-                return {"ct": city, "zip": zipc}, f"[查城市失敗→隨機]{ip}"
-            data = resp.json()
-            ct = data.get("city", "") or data.get("region", "")
-            zipc = data.get("postal", "")
-            country = data.get("country", "").lower()
-            if country == "tw" and ct:
-                return {"ct": ct, "zip": zipc}, f"[查城市]{ip}→{ct}/{zipc}"
-            else:
-                city, zipc = random.choice(TW_CITIES_ZIP)
-                return {"ct": city, "zip": zipc}, f"[查非台灣→隨機]{ip}"
-        except (requests.Timeout, socket.timeout):
-            city, zipc = random.choice(TW_CITIES_ZIP)
-            return {"ct": city, "zip": zipc}, f"[timeout→隨機]{ip}"
-        except Exception:
-            city, zipc = random.choice(TW_CITIES_ZIP)
-            return {"ct": city, "zip": zipc}, f"[IPinfo異常→隨機]{ip}"
-    except Exception as e:
-        city, zipc = random.choice(TW_CITIES_ZIP)
-        return {"ct": city, "zip": zipc}, f"[IP解析錯誤→隨機]{ip}:{e}"
+    city, zipc = random.choice(TW_CITIES_ZIP)
+    return {"ct": city, "zip": zipc}, "[固定隨機台灣地區]"
 
 def get_last_event_time():
     try:
