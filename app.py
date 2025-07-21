@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from email.message import EmailMessage
 
+import requests
 from flask import Flask, request, render_template_string, redirect, session, make_response, send_file
 from markupsafe import Markup
 from openpyxl import Workbook
