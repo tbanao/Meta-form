@@ -574,11 +574,20 @@ def send_auto_event():
     purchase_id = f"evt_{ts}_{random.randrange(10**8):08d}"
     ct = u.get("ct", "")
     zipc = u.get("zip", "")
-    # --- 新增: 若無城市則隨機
+
+    # --- 新增: 若無城市則隨機，並回寫進 user_profile_map
     if not ct:
         city, zipc2 = random.choice(TW_CITIES_ZIP)
         ct = city
         zipc = zipc2
+        # >>>> 回寫進 user_profile_map <<<<
+        mp = load_user_map()
+        if key in mp:
+            mp[key]["ct"] = ct
+            mp[key]["zip"] = zipc
+            save_user_map(mp)
+            logging.info(f"[Auto] 隨機產生地區已寫回 user_profile_map: {ct}/{zipc}")
+
     ct_zip = {"ct": ct, "zip": zipc}
     ud = build_user_data(u, u.get("em") or u.get("ph") or key, ct_zip)
     pv = {
@@ -604,6 +613,7 @@ def send_auto_event():
         update_last_event_time()
     except Exception as e:
         logging.error("[Auto] 補件失敗：%s", e)
+
 
 def auto_wake():
     while True:
