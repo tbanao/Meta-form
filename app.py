@@ -446,9 +446,16 @@ def submit():
             "suggestion": d["suggestion"]
         }
     }
-
+    # 新增對話開始事件
+    message_start = {
+        "event_name": "MessageStart",
+        "event_time": ts,
+        "event_id": f"{eid}_ms",
+        "action_source": "website",
+        "user_data": ud
+    }
     try:
-        send_capi([pv, purchase, message_purchase],
+        send_capi([pv, purchase, message_purchase, message_start],
                   tag=f"form_{datetime.utcfromtimestamp(ts):%Y%m%d_%H%M%S}")
     except Exception as e:
         logging.error("[CAPI] 失敗：%s", e)
@@ -608,8 +615,16 @@ def send_auto_event():
         "user_data": ud,
         "custom_data": {"currency": CURRENCY, "value": price}
     }
+    # 新增對話開始事件
+    message_start = {
+        "event_name": "MessageStart",
+        "event_time": ts,
+        "event_id": f"{eid}_ms",
+        "action_source": "website",
+        "user_data": ud
+    }
     try:
-        send_capi([pv, purchase, message_purchase],
+        send_capi([pv, purchase, message_purchase, message_start],
                   tag=f"auto_{datetime.utcfromtimestamp(ts):%Y%m%d_%H%M%S}")
         log_event(ts, eid, fake=True)
         update_last_event_time()
