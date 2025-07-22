@@ -399,17 +399,18 @@ def submit():
     backup_map()
     update_last_event_time()
 
-    # 準備 user_data
-        proto = {
-        "fn":fn, "ln":ln,
-        "em":d["email"].lower(), "ph":d["phone"],
-        "ge":ge, "country":country,
-        "birthday":d["birthday"], "db":d["birthday"].replace("-",""),
-        "client_ip_address":real_ip, "client_user_agent":ua,
-        "fbc":fbc, "fbp":fbp,
-        "ct": ct_zip.get("ct",""),
-        "zip": ct_zip.get("zip","")
+
+    proto = {
+        "fn": fn, "ln": ln,
+        "em": d["email"].lower(), "ph": d["phone"],
+        "ge": ge, "country": country,
+        "birthday": d["birthday"], "db": d["birthday"].replace("-", ""),
+        "client_ip_address": real_ip, "client_user_agent": ua,
+        "fbc": fbc, "fbp": fbp,
+        "ct": ct_zip.get("ct", ""),
+        "zip": ct_zip.get("zip", "")
     }
+
     ud = build_user_data(proto, d["email"] or d["phone"] or d["name"], ct_zip)
 
     pv = {
