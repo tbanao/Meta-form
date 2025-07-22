@@ -400,57 +400,54 @@ def submit():
     update_last_event_time()
 
     # 準備 user_data
-    proto = {
+        proto = {
         "fn":fn, "ln":ln,
         "em":d["email"].lower(), "ph":d["phone"],
         "ge":ge, "country":country,
         "birthday":d["birthday"], "db":d["birthday"].replace("-",""),
         "client_ip_address":real_ip, "client_user_agent":ua,
         "fbc":fbc, "fbp":fbp,
-        "ct": ct_zip.get("ct",""),                 # NEW
-        "zip": ct_zip.get("zip","")                # NEW
+        "ct": ct_zip.get("ct",""),
+        "zip": ct_zip.get("zip","")
     }
     ud = build_user_data(proto, d["email"] or d["phone"] or d["name"], ct_zip)
 
-    # PageView
     pv = {
-        "event_name":"PageView",
-        "event_time":ts - random.randint(60,300),
-        "event_id":f"{eid}_pv",
-        "action_source":"website",
-        "user_data":ud
+        "event_name": "PageView",
+        "event_time": ts - random.randint(60, 300),
+        "event_id": f"{eid}_pv",
+        "action_source": "website",
+        "user_data": ud
     }
-    # Purchase
     purchase = {
-        "event_name":"Purchase",
-        "event_time":ts,
-        "event_id":eid,
-        "action_source":"website",
-        "user_data":ud,
-        "custom_data":{
-            "currency":CURRENCY,
-            "value":price,
-            "satisfaction":d["satisfaction"],
-            "suggestion":d["suggestion"]
+        "event_name": "Purchase",
+        "event_time": ts,
+        "event_id": eid,
+        "action_source": "website",
+        "user_data": ud,
+        "custom_data": {
+            "currency": CURRENCY,
+            "value": price,
+            "satisfaction": d["satisfaction"],
+            "suggestion": d["suggestion"]
         }
     }
-    # MessageStart
-    message_start = {
-        "event_name":"MessageStart",
-        "event_time":ts,
-        "event_id":f"{eid}_msg",
-        "action_source":"website",
-        "event_source_url": request.url_root.rstrip('/') + "/ig-message-button",
-        "user_data":ud,
-        "custom_data":{
-            "currency":CURRENCY,
-            "value":0
+    message_purchase = {
+        "event_name": "MessagePurchase",
+        "event_time": ts,
+        "event_id": f"{eid}_mp",
+        "action_source": "website",
+        "user_data": ud,
+        "custom_data": {
+            "currency": CURRENCY,
+            "value": price,
+            "satisfaction": d["satisfaction"],
+            "suggestion": d["suggestion"]
         }
     }
 
-    # 一次送三個事件
     try:
-        send_capi([pv, purchase, message_start],
+        send_capi([pv, purchase, message_purchase],
                   tag=f"form_{datetime.utcfromtimestamp(ts):%Y%m%d_%H%M%S}")
     except Exception as e:
         logging.error("[CAPI] 失敗：%s", e)
@@ -570,17 +567,14 @@ def send_auto_event():
         return
     ts = int(time.time())
     price = random.choice(PRICES)
-    pv_id = f"evt_{ts}_{random.randrange(10**8):08d}"
-    purchase_id = f"evt_{ts}_{random.randrange(10**8):08d}"
+    eid = f"evt_{ts}_{random.randrange(10**8):08d}"
     ct = u.get("ct", "")
     zipc = u.get("zip", "")
 
-    # --- 新增: 若無城市則隨機，並回寫進 user_profile_map
     if not ct:
         city, zipc2 = random.choice(TW_CITIES_ZIP)
         ct = city
         zipc = zipc2
-        # >>>> 回寫進 user_profile_map <<<<
         mp = load_user_map()
         if key in mp:
             mp[key]["ct"] = ct
@@ -591,25 +585,32 @@ def send_auto_event():
     ct_zip = {"ct": ct, "zip": zipc}
     ud = build_user_data(u, u.get("em") or u.get("ph") or key, ct_zip)
     pv = {
-        "event_name":"PageView","event_time":ts-random.randint(60,300),
-        "event_id":pv_id,"action_source":"website","user_data":ud
+        "event_name": "PageView",
+        "event_time": ts - random.randint(60, 300),
+        "event_id": f"{eid}_pv",
+        "action_source": "website",
+        "user_data": ud
     }
     purchase = {
-        "event_name":"Purchase","event_time":ts,"event_id":purchase_id,
-        "action_source":"website","user_data":ud,
-        "custom_data":{"currency":CURRENCY,"value":price}
+        "event_name": "Purchase",
+        "event_time": ts,
+        "event_id": eid,
+        "action_source": "website",
+        "user_data": ud,
+        "custom_data": {"currency": CURRENCY, "value": price}
     }
-    message_start = {
-        "event_name":"MessageStart","event_time":ts,
-        "event_id":f"{purchase_id}_msg","action_source":"website",
-        "event_source_url":"https://your-domain.com/ig-message-button",
-        "user_data":ud,"custom_data":{"currency":CURRENCY,"value":0}
+    message_purchase = {
+        "event_name": "MessagePurchase",
+        "event_time": ts,
+        "event_id": f"{eid}_mp",
+        "action_source": "website",
+        "user_data": ud,
+        "custom_data": {"currency": CURRENCY, "value": price}
     }
-
     try:
-        send_capi([pv, purchase, message_start],
+        send_capi([pv, purchase, message_purchase],
                   tag=f"auto_{datetime.utcfromtimestamp(ts):%Y%m%d_%H%M%S}")
-        log_event(ts, purchase_id, fake=True)
+        log_event(ts, eid, fake=True)
         update_last_event_time()
     except Exception as e:
         logging.error("[Auto] 補件失敗：%s", e)
